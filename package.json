@@ -1,0 +1,24 @@
+{
+  "name": "atlas-hosted",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ATLAS — Allocation, Timeline, Load and Allocation System",
+  "type": "module",
+  "packageManager": "npm@10.9.2",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@atlas/core && npm run build --workspace=@atlas/server && npm run build --workspace=@atlas/web",
+    "typecheck": "npm run typecheck --workspace=@atlas/core && npm run typecheck --workspace=@atlas/server && npm run typecheck --workspace=@atlas/web",
+    "test": "npm run test --workspace=@atlas/core && npm run test --workspace=@atlas/server",
+    "dev:server": "npm run dev --workspace=@atlas/server",
+    "dev:web": "npm run dev --workspace=@atlas/web",
+    "start": "npm run start --workspace=@atlas/server"
+  }
+}

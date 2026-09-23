@@ -1,0 +1,18 @@
+services:
+  atlas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      ATLAS_DB_PATH: /data/atlas.db
+      ATLAS_CLIENT_DIST_PATH: /app/apps/team-manager
+    volumes:
+      - atlas-sqlite:/data
+    restart: unless-stopped
+
+volumes:
+  atlas-sqlite:
