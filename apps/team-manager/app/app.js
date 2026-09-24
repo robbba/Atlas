@@ -125,17 +125,10 @@ function lsSet(key, value) {
 // ═══ APP SETTINGS ════════════════════════════════════════════════════════════
 const APP_VERSION = '0.3.0';
 const DATA_VERSION = 9;
-const DEFAULT_WORK_CODES = [
-  { id: 'wc1', name: 'Øvelse Dag', abbreviation: 'ØV D', staffingImpact: 'available', aggregationMode: 'hours', color: '#3b82f6' },
-  { id: 'wc2', name: 'Turnusfri', abbreviation: 'TF', staffingImpact: 'available', aggregationMode: 'hours', color: '#64748b' },
-];
-const DEFAULT_SHIFT_TEMPLATES = [
-  { id: 'shift-normal', name: 'Normal Working Hours', start: '0730', end: '1500', category: 'normal', color: '#64748b', hours: 7.5 },
-  { id: 'shift-day', name: 'Day', start: '0730', end: '2400', category: 'day', color: '#f59e0b', hours: 16.5 },
-  { id: 'shift-night', name: 'Night', start: '0000', end: '0730', category: 'night', color: '#3b82f6', hours: 7.5 },
-];
+const DEFAULT_WORK_CODES = [];
+const DEFAULT_SHIFT_TEMPLATES = [];
 const LOCAL_ONLY_APP_SETTING_KEYS = [
-  'darkMode', 'autoSaveEnabled', 'autoSyncEnabled', 'showOnlyConfirmedActivities',
+  'darkMode', 'autoSaveEnabled', 'autoSyncEnabled', 'showOnlyConfirmedActivities', 'workwheelGridDisplayMode',
   'activityStatusFilter', 'jumpToTodayOnGridChange', 'specialDaysVisible',
 ];
 
@@ -153,7 +146,7 @@ let appSettings = {
   lightMax: 70,
   normalMax: 100,
   highMax: 120,
-  planningHorizonDays: 14,
+  planningHorizonDays: 0,
   planningHorizonColor: '#ef4444',
   holidays: [],
   specialDays: { recurring: [], oneOff: [] },
@@ -164,16 +157,18 @@ let appSettings = {
   sectionColors: {},
   processColors: {},
   activityTypes: [],
-  workCodes: DEFAULT_WORK_CODES.map(code => ({ ...code })),
-  shiftTemplates: DEFAULT_SHIFT_TEMPLATES.map(shift => ({ ...shift })),
+  workCodes: [],
+  shiftTemplates: [],
   summaryColumns: null,
-  securityLabel: { enabled: false, text: 'BEGRENSET', color: '#16a34a' },
+  securityLabel: { enabled: false, text: 'CONFIDENTIAL', color: '#dc2626' },
   shiftRotationEnabled: false,
   shiftRotationRanges: { normal: '0730-1500', day: '0730-2400', evening: '1200-2000', night: '0000-0730' },
   shiftRotationColors: { normal: '#64748b', day: '#f59e0b', evening: '#14b8a6', night: '#3b82f6', turn: '#8b5cf6', leave: '#b45309', overtime: '#dc2626' },
   shiftTeams: [],
   workwheelEnabled: false,
   workwheelUpcomingDays: 14,
+  workwheelGridDisplayMode: 'cells',
+  myScheduleLookaheadDays: 31,
   bugReportEnabled: false,
   bugTracker: [],
 };
@@ -193,7 +188,7 @@ function normalizeBugTracker(value) {
   })).filter(item => item.poc || item.description);
 }
 function normalizeShiftTemplates(value) {
-  const source = Array.isArray(value) && value.length ? value : DEFAULT_SHIFT_TEMPLATES;
+  const source = Array.isArray(value) ? value : [];
   return source.map((shift, index) => {
     const start = String(shift.start || '').replace(':', '').padStart(4, '0');
     const end = String(shift.end || '').replace(':', '').padStart(4, '0');
@@ -236,7 +231,7 @@ function loadSettings() {
       appSettings.lightMax = typeof parsed.lightMax === 'number' ? parsed.lightMax : 70;
       appSettings.normalMax = typeof parsed.normalMax === 'number' ? parsed.normalMax : 100;
       appSettings.highMax = typeof parsed.highMax === 'number' ? parsed.highMax : 120;
-      appSettings.planningHorizonDays = Number.isFinite(Number(parsed.planningHorizonDays)) ? Math.max(0, Math.min(365, Math.round(Number(parsed.planningHorizonDays)))) : 14;
+      appSettings.planningHorizonDays = Number.isFinite(Number(parsed.planningHorizonDays)) ? Math.max(0, Math.min(365, Math.round(Number(parsed.planningHorizonDays)))) : 0;
       appSettings.planningHorizonColor = normalizeHexColor(parsed.planningHorizonColor, '#ef4444');
       appSettings.holidays = Array.isArray(parsed.holidays) ? parsed.holidays : [];
       appSettings.specialDays = normalizeSpecialDays(parsed.specialDays);
@@ -276,7 +271,7 @@ function loadSettings() {
 }
 function persistSettings() { return lsSet(SETTINGS_KEY, JSON.stringify(appSettings)); }
 function normalizeSecurityLabel(value) {
-  const fallback = { enabled: false, text: 'BEGRENSET', color: '#16a34a' };
+  const fallback = { enabled: false, text: 'CONFIDENTIAL', color: '#dc2626' };
   if (!value || typeof value !== 'object') return { ...fallback };
   return {
     enabled: value.enabled === true,
@@ -362,7 +357,7 @@ function normalizeActivityRelevance(value) {
 function activityRelevance(activity) {
   return normalizeActivityRelevance(activity?.relevance || { departments: activity?.departments, sections: activity?.sections });
 }
-function employeeSection(employee) { return String(employee?.section || employee?.subdepartment || '').trim(); }
+function employeeSection(employee) { return String(employee?.section || '').trim(); }
 function activityRelevantToEmployee(activity, employee) {
   if (!activity || !employee) return false;
   const relevance = activityRelevance(activity);
@@ -370,13 +365,24 @@ function activityRelevantToEmployee(activity, employee) {
     && (!relevance.sections.length || relevance.sections.includes(employeeSection(employee)));
 }
 function activityVisibleForScheduleSection(activity) {
+  if (activity?.source === 'workwheel' && appSettings.workwheelGridDisplayMode === 'cells') return false;
   if (!scheduleSectionFilter) return true;
   const matchingEmployees = employees.filter(employee => employeeSection(employee) === scheduleSectionFilter);
   return (activity.participants || []).some(participant => matchingEmployees.some(employee => employee.id === Number(participant.id)))
     || activityRelevance(activity).sections.includes(scheduleSectionFilter);
 }
+function toggleWorkwheelAvailability(activityId, enabled) {
+  if (typeof workwheelState === 'undefined' || !activityId) return;
+  if (enabled) {
+    if (typeof importScheduleWorkwheelActivity === 'function') importScheduleWorkwheelActivity(Number(activityId));
+  } else {
+    workwheelState.activities = workwheelState.activities.filter(activity => Number(activity.sourceActivityId) !== Number(activityId));
+    if (typeof saveWorkwheelState === 'function') saveWorkwheelState();
+    if (typeof renderWorkwheel === 'function' && currentPage === 'workwheel') renderWorkwheel();
+  }
+}
 function normalizeWorkCodes(value) {
-  const source = Array.isArray(value) && value.length ? value : DEFAULT_WORK_CODES;
+  const source = Array.isArray(value) ? value : [];
   return source.map((code, index) => {
     const name = String(code.name || 'Work Code').trim();
     const abbreviation = String(code.abbreviation || code.abbr || '').trim().toUpperCase().slice(0, 12);
@@ -527,7 +533,7 @@ function loadSettings() {
       appSettings.lightMax = typeof parsed.lightMax === 'number' ? parsed.lightMax : 70;
       appSettings.normalMax = typeof parsed.normalMax === 'number' ? parsed.normalMax : 100;
       appSettings.highMax = typeof parsed.highMax === 'number' ? parsed.highMax : 120;
-      appSettings.planningHorizonDays = Number.isFinite(Number(parsed.planningHorizonDays)) ? Math.max(0, Math.min(365, Math.round(Number(parsed.planningHorizonDays)))) : 14;
+      appSettings.planningHorizonDays = Number.isFinite(Number(parsed.planningHorizonDays)) ? Math.max(0, Math.min(365, Math.round(Number(parsed.planningHorizonDays)))) : 0;
       appSettings.planningHorizonColor = normalizeHexColor(parsed.planningHorizonColor, '#ef4444');
       appSettings.holidays = Array.isArray(parsed.holidays) ? parsed.holidays : [];
       appSettings.specialDays = normalizeSpecialDays(parsed.specialDays);
@@ -745,10 +751,12 @@ function openSettings() {
   document.getElementById('set-app-name').value = appSettings.appName;
   const secLabel = normalizeSecurityLabel(appSettings.securityLabel);
   document.getElementById('set-security-label-enabled').checked = secLabel.enabled === true;
-  document.getElementById('set-security-label-text').value = secLabel.text;
+  document.getElementById('set-security-label-text').value = secLabel.text || '';
   document.getElementById('set-security-label-color').value = secLabel.color;
   document.getElementById('set-workwheel-enabled').checked = appSettings.workwheelEnabled === true;
   document.getElementById('set-workwheel-upcoming-days').value = String(appSettings.workwheelUpcomingDays || 14);
+  document.getElementById('set-workwheel-grid-display').value = ['cells', 'both', 'row'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
+  document.getElementById('set-my-schedule-lookahead-days').value = String(appSettings.myScheduleLookaheadDays || 31);
   renderHolidaySettings();
   updateDefaultJsonStatus();
   const about = document.getElementById('set-about-version');
@@ -776,12 +784,59 @@ function updateHostedAccountUi() {
   const personalNav = document.getElementById('my-upcoming-nav');
   if (personalNav) personalNav.style.display = authenticated && hostedUser.employeeId !== null && hostedUser.employeeId !== undefined ? '' : 'none';
 }
+function openPersonalSettings() {
+  if (!hostedMode || !hostedUser) return;
+  document.getElementById('personal-name').value = hostedUser.name || '';
+  document.getElementById('personal-username').value = hostedUser.username || '';
+  document.getElementById('personal-email').value = hostedUser.email || '';
+  document.getElementById('personal-password').value = '';
+  const preferences = hostedUser.preferences || {};
+  document.getElementById('personal-jump-today').checked = preferences.jumpToTodayOnGridChange !== false;
+  document.getElementById('personal-dark-mode').checked = preferences.darkMode === true;
+  document.getElementById('personal-zoom').value = String(normalizeAppZoom(preferences.zoom));
+  document.getElementById('personal-colleague-notifications').checked = preferences.colleagueChangeNotificationsEnabled === true;
+  const selectedUserIds = new Set(Array.isArray(preferences.colleagueChangeUserIds) ? preferences.colleagueChangeUserIds : []);
+  const userList = document.getElementById('personal-colleague-users');
+  if (userList) userList.innerHTML = '<div class="form-hint">Notify me about changes from:</div>' + (hostedUser?.availableUsers || []).map(user => `<label><input type="checkbox" value="${esc(user.id)}" ${selectedUserIds.has(String(user.id)) ? 'checked' : ''}><span>${esc(user.name)} · ${esc(accountRoleLabel(user.role))}</span></label>`).join('');
+  document.getElementById('personal-settings-error').textContent = '';
+  document.getElementById('personal-settings-modal').classList.add('open');
+}
+async function savePersonalSettings(event) {
+  event.preventDefault();
+  const error = document.getElementById('personal-settings-error');
+  error.textContent = '';
+  const password = document.getElementById('personal-password').value;
+  const payload = {
+    name: document.getElementById('personal-name').value,
+    email: document.getElementById('personal-email').value,
+    preferences: {
+      jumpToTodayOnGridChange: document.getElementById('personal-jump-today').checked,
+      darkMode: document.getElementById('personal-dark-mode').checked,
+      zoom: normalizeAppZoom(document.getElementById('personal-zoom').value),
+      colleagueChangeNotificationsEnabled: document.getElementById('personal-colleague-notifications').checked,
+      colleagueChangeUserIds: [...document.querySelectorAll('#personal-colleague-users input:checked')].map(input => input.value),
+    },
+  };
+  if (password) payload.password = password;
+  const response = await fetch('/api/me/profile', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) { error.textContent = result.error || 'Could not save account settings.'; return; }
+  hostedUser = { ...hostedUser, ...result.user, preferences: result.preferences };
+  appSettings.jumpToTodayOnGridChange = result.preferences.jumpToTodayOnGridChange !== false;
+  appSettings.darkMode = result.preferences.darkMode === true;
+  applyAppZoom(result.preferences.zoom);
+  applyTheme();
+  updateHostedAccountUi();
+  closeModal('personal-settings-modal');
+  renderPage();
+  showToast('Personal settings saved.', 3500);
+}
 function openAccountManagement() {
   if (!hostedMode || hostedUser?.role !== 'admin') {
     showToast('Administrator access is required.', 3500);
     return;
   }
-  closeModal('settings-modal');
+  openSettingsChild('account-management-modal', 'settings-modal');
   resetAccountForm();
   document.getElementById('account-management-modal').classList.add('open');
   loadHostedUsers();
@@ -794,6 +849,8 @@ function resetAccountForm() {
   form.reset();
   document.getElementById('account-id').value = '';
   document.getElementById('account-role').value = 'planner';
+  document.getElementById('account-username').value = '';
+  document.getElementById('account-email').value = '';
   document.getElementById('account-employee').value = '';
   document.getElementById('account-scope').value = '';
   document.getElementById('account-password').required = true;
@@ -807,9 +864,22 @@ async function loadHostedUsers() {
     const response = await fetch('/api/admin/users', { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load accounts.');
     const { users } = await response.json();
-    list.innerHTML = users.map(user => `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border);border-radius:8px;padding:10px"><div><b>${esc(user.name)}</b><div class="form-hint">${accountRoleLabel(user.role)}${user.disabled ? ' · Disabled' : ''}</div></div><div style="display:flex;gap:6px"><button class="btn btn-sm" type="button" data-edit-user="${esc(user.id)}">Edit</button><button class="btn btn-sm" type="button" data-delete-user="${esc(user.id)}">Delete</button></div></div>`).join('') || '<div class="form-hint">No accounts found.</div>';
-    list.querySelectorAll('[data-edit-user]').forEach(button => button.addEventListener('click', () => editHostedUser(users.find(user => user.id === button.dataset.editUser))));
-    list.querySelectorAll('[data-delete-user]').forEach(button => button.addEventListener('click', () => deleteHostedUser(button.dataset.deleteUser)));
+    const render = () => {
+      const query = document.getElementById('account-search').value.trim().toLowerCase();
+      const role = document.getElementById('account-filter-role').value;
+      const status = document.getElementById('account-filter-status').value;
+      const sort = document.getElementById('account-sort').value;
+      const visible = users.filter(user => (!query || [user.name, user.username, user.email].some(value => String(value || '').toLowerCase().includes(query))) && (role === 'all' || user.role === role) && (status === 'all' || (status === 'disabled' ? user.disabled : !user.disabled))).sort((a, b) => sort === 'role' ? accountRoleLabel(a.role).localeCompare(accountRoleLabel(b.role)) : sort === 'created' ? String(b.createdAt || '').localeCompare(String(a.createdAt || '')) : a.name.localeCompare(b.name));
+      document.getElementById('account-summary').innerHTML = `<span>${users.length} total</span><span>${users.filter(user => !user.disabled).length} enabled</span><span>${users.filter(user => user.disabled).length} disabled</span>`;
+      list.innerHTML = visible.map(user => `<div class="account-row"><div class="account-identity"><strong>${esc(user.name)}</strong><div class="account-meta">${esc(user.username || '')} · ${esc(user.email || '')}</div><div><span class="role-pill role-${esc(user.role)}">${accountRoleLabel(user.role)}</span>${user.disabled ? ' <span class="role-pill">Disabled</span>' : ''}</div></div><div class="account-meta">${user.lastActiveAt ? `Last active ${esc(formatStatisticDate(user.lastActiveAt))}` : 'Never active'}</div><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm" type="button" data-edit-user="${esc(user.id)}">Edit</button><button class="btn btn-sm" type="button" data-reset-password="${esc(user.id)}">Reset password</button><button class="btn btn-sm" type="button" data-toggle-user="${esc(user.id)}">${user.disabled ? 'Enable' : 'Disable'}</button><button class="btn btn-sm" type="button" data-revoke-user="${esc(user.id)}">Revoke sessions</button><button class="btn btn-sm btn-danger" type="button" data-delete-user="${esc(user.id)}">Delete</button></div></div>`).join('') || '<div class="form-hint">No accounts match the current filters.</div>';
+      list.querySelectorAll('[data-edit-user]').forEach(button => button.addEventListener('click', () => editHostedUser(users.find(user => user.id === button.dataset.editUser))));
+      list.querySelectorAll('[data-reset-password]').forEach(button => button.addEventListener('click', () => resetHostedUserPassword(users.find(user => user.id === button.dataset.resetPassword))));
+      list.querySelectorAll('[data-delete-user]').forEach(button => button.addEventListener('click', () => deleteHostedUser(button.dataset.deleteUser)));
+      list.querySelectorAll('[data-toggle-user]').forEach(button => button.addEventListener('click', () => toggleHostedUser(users.find(user => user.id === button.dataset.toggleUser))));
+      list.querySelectorAll('[data-revoke-user]').forEach(button => button.addEventListener('click', () => revokeHostedUserSessions(button.dataset.revokeUser)));
+    };
+    ['account-search', 'account-filter-role', 'account-filter-status', 'account-sort'].forEach(id => document.getElementById(id)?.addEventListener('input', render));
+    render();
   } catch (error) { list.textContent = error.message || 'Could not load accounts.'; }
 }
 async function loadPersonnelLinkOptions() {
@@ -836,6 +906,8 @@ function editHostedUser(user) {
   if (!user) return;
   document.getElementById('account-id').value = user.id;
   document.getElementById('account-name').value = user.name;
+  document.getElementById('account-username').value = user.username || '';
+  document.getElementById('account-email').value = user.email || '';
   document.getElementById('account-role').value = user.role;
   document.getElementById('account-employee').value = user.employeeId ?? '';
   document.getElementById('account-scope').value = user.responsibilityScopes?.[0]?.unitPath ?? '';
@@ -850,10 +922,34 @@ async function deleteHostedUser(userId) {
   resetAccountForm();
   await loadHostedUsers();
 }
+async function toggleHostedUser(user) {
+  if (!user) return;
+  const action = user.disabled ? 'enable' : 'disable';
+  if (!confirm(`${action[0].toUpperCase() + action.slice(1)} ${user.name}'s account?`)) return;
+  const response = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ disabled: !user.disabled }) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(result.error || `Could not ${action} user.`); return; }
+  await loadHostedUsers();
+}
+function resetHostedUserPassword(user) {
+  if (!user) return;
+  editHostedUser(user);
+  const field = document.getElementById('account-password');
+  field.required = true;
+  field.focus();
+  showToast(`Enter a new password for ${user.name}, then save the account.`, 4500);
+}
+async function revokeHostedUserSessions(userId) {
+  if (!userId || !confirm('Revoke all active sessions for this user?')) return;
+  const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/revoke-sessions`, { method: 'POST' });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(result.error || 'Could not revoke sessions.'); return; }
+  showToast('User sessions revoked.', 3000);
+}
 async function saveHostedUser(event) {
   event.preventDefault();
   const id = document.getElementById('account-id').value;
-  const payload = { name: document.getElementById('account-name').value, role: document.getElementById('account-role').value };
+  const payload = { name: document.getElementById('account-name').value, username: document.getElementById('account-username').value, email: document.getElementById('account-email').value, role: document.getElementById('account-role').value };
   const password = document.getElementById('account-password').value;
   if (password) payload.password = password;
   const response = await fetch(id ? `/api/admin/users/${encodeURIComponent(id)}` : '/api/admin/users', { method: id ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
@@ -886,13 +982,63 @@ async function signOutHostedUser() {
   showHostedAuthScreen('login', 'You have been signed out.');
 }
 function openAdministrationSettings() {
-  closeModal('settings-modal');
+  openSettingsChild('administration-settings-modal', 'settings-modal');
   const info = document.getElementById('admin-audit-info');
   const checksToggle = document.getElementById('set-operational-checks-enabled');
   if (checksToggle) checksToggle.checked = operationalChecksEnabled;
   document.getElementById('set-bug-report-enabled').checked = appSettings.bugReportEnabled === true;
   if (info) info.innerHTML = `Active file: <b>${esc(activeFileName || 'None')}</b><br>Source: <b>${esc(remoteUpdateSource)}</b><br>Status: <b>${hasUnsavedChanges ? 'Unsaved changes' : 'Saved'}</b><br>App version: <b>${esc(APP_VERSION)}</b><br>Data format: <b>v${DATA_VERSION}</b>`;
   document.getElementById('administration-settings-modal').classList.add('open');
+  loadAdministrationStatistics();
+}
+function formatStatisticBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  return `${(value / 1024 ** 3).toFixed(2)} GB`;
+}
+function formatStatisticDate(value) {
+  if (!value) return 'Unavailable';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unavailable' : date.toLocaleString();
+}
+function renderAdministrationStatistics(stats) {
+  const target = document.getElementById('admin-statistics');
+  if (!target) return;
+  target.innerHTML = `<div class="admin-stat-toolbar"><span class="form-hint">Generated ${esc(formatStatisticDate(stats.generatedAt))}</span><button class="btn btn-sm" type="button" onclick="loadAdministrationStatistics()">Refresh</button></div><div class="admin-stat-grid"><div><b>Storage</b><span>Total ${esc(formatStatisticBytes(stats.storage.totalBytes))}</span><small>Database ${esc(formatStatisticBytes(stats.storage.databaseBytes))} · WAL ${esc(formatStatisticBytes(stats.storage.walBytes))} · SHM ${esc(formatStatisticBytes(stats.storage.shmBytes))}</small></div><div><b>Records</b><span>${stats.records.users} users · ${stats.records.personnel} personnel · ${stats.records.activities} activities</span><small>${stats.records.scheduleEntries} schedule entries · ${stats.records.statuses} statuses · ${stats.records.categories} categories</small></div><div><b>User activity</b><span>${stats.users.onlineNow} active now · ${stats.users.recentlyActive} active this week</span><small>${stats.users.neverActive} never active · ${stats.users.disabled} disabled</small></div><div><b>Recent changes</b><span>${stats.changes.planner24h} planner changes / 24h</span><small>${stats.changes.planner7d} planner changes / 7d · ${stats.changes.audit7d} audit events / 7d</small></div><div><b>Database health</b><span>SQLite ${esc(stats.health.sqliteVersion)} · ${esc(stats.health.journalMode)}</span><small>Schema v${stats.health.schemaVersion} · Integrity: ${esc(stats.health.integrityCheck)}</small></div></div><div class="form-hint">Database last modified: ${esc(formatStatisticDate(stats.storage.modifiedAt))}</div>`;
+}
+async function loadAdministrationStatistics() {
+  const target = document.getElementById('admin-statistics');
+  if (!target || !hostedMode || hostedUser?.role !== 'admin') return;
+  target.textContent = 'Loading statistics…';
+  const response = await fetch('/api/admin/statistics', { cache: 'no-store' });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) { target.textContent = result.error || 'Statistics unavailable.'; return; }
+  renderAdministrationStatistics(result);
+}
+async function factoryResetHostedApp() {
+  if (!hostedMode || hostedUser?.role !== 'admin') {
+    showToast('Administrator access is required.', 3500);
+    return;
+  }
+  const confirmation = prompt('This permanently deletes all ATLAS data and accounts. Type RESET ATLAS to continue.');
+  if (confirmation !== 'RESET ATLAS') return;
+  if (!confirm('Final confirmation: permanently erase the entire ATLAS database and return to first-run setup?')) return;
+  const response = await fetch('/api/admin/factory-reset', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ confirmation }),
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    alert(result.error || 'Factory reset failed.');
+    return;
+  }
+  hostedUser = null;
+  document.getElementById('administration-settings-modal')?.classList.remove('open');
+  document.getElementById('settings-modal')?.classList.remove('open');
+  showHostedAuthScreen('setup', 'ATLAS was reset. Create the first administrator to begin again.');
 }
 async function saveAdministrationSettings() {
   if (hostedMode && hostedUser?.role === 'admin') {
@@ -911,28 +1057,28 @@ async function saveAdministrationSettings() {
   renderPage();
 }
 function openScheduleSettings() {
-  closeModal('settings-modal');
+  openSettingsChild('schedule-settings-modal', 'settings-modal');
   document.getElementById('set-core-time').value = appSettings.coreWorkdayRange || '0730-1500';
   document.getElementById('set-jump-to-today').checked = appSettings.jumpToTodayOnGridChange !== false;
   document.getElementById('set-show-level-rank').checked = appSettings.showLevelRankInSchedule !== false;
-  document.getElementById('set-planning-horizon-days').value = String(appSettings.planningHorizonDays ?? 14);
+  document.getElementById('set-planning-horizon-days').value = String(appSettings.planningHorizonDays ?? 0);
   document.getElementById('set-planning-horizon-color').value = normalizeHexColor(appSettings.planningHorizonColor, '#ef4444');
   document.getElementById('set-core-time').oninput = updateCoreHoursDisplayFromRangeInput;
   updateCoreHoursDisplayFromRangeInput();
   document.getElementById('schedule-settings-modal').classList.add('open');
 }
 function openDataBackupSettings() {
-  closeModal('settings-modal');
+  openSettingsChild('data-backup-settings-modal', 'settings-modal');
   updateDefaultJsonStatus();
   document.getElementById('data-backup-settings-modal').classList.add('open');
 }
 function openOrganisationStructure() {
-  closeModal('settings-modal');
+  openSettingsChild('organisation-structure-modal', 'settings-modal');
   renderOrganisationStructure();
   document.getElementById('organisation-structure-modal').classList.add('open');
 }
 function openPersonnelSettings() {
-  closeModal('settings-modal');
+  openSettingsChild('personnel-settings-modal', 'settings-modal');
   document.getElementById('personnel-light-max').value = String(appSettings.lightMax);
   document.getElementById('personnel-normal-max').value = String(appSettings.normalMax);
   document.getElementById('personnel-high-max').value = String(appSettings.highMax);
@@ -1036,6 +1182,7 @@ async function moveStructureNode(nodeJson, direction) {
   renderOrganisationStructure();
 }
 function openShiftRotationSettings() {
+    openSettingsChild('shift-rotation-settings-modal', 'settings-modal');
   const enabled = document.getElementById('set-shift-rotation-enabled');
   if (enabled) enabled.checked = appSettings.shiftRotationEnabled === true;
   const ranges = normalizeShiftRotationRanges(appSettings.shiftRotationRanges);
@@ -1179,6 +1326,7 @@ async function removeHolidaySetting(index) {
   renderHolidaySettings();
 }
 function openSpecialDaysModal() {
+    if (!document.getElementById('special-days-modal')?.classList.contains('open')) openSettingsChild('special-days-modal', 'schedule-settings-modal');
   appSettings.specialDays = normalizeSpecialDays(appSettings.specialDays);
   resetSpecialDayForm();
   toggleSpecialDayFields();
@@ -1603,12 +1751,16 @@ async function saveSettings() {
   const showRank = document.getElementById('set-show-level-rank')?.checked;
   const workwheelEnabled = document.getElementById('set-workwheel-enabled')?.checked === true;
   const workwheelUpcomingDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-workwheel-upcoming-days')?.value) || 14)));
+  const workwheelGridDisplayMode = ['cells', 'both', 'row'].includes(document.getElementById('set-workwheel-grid-display')?.value) ? document.getElementById('set-workwheel-grid-display').value : 'cells';
+  const myScheduleLookaheadDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-my-schedule-lookahead-days')?.value) || 31)));
   await mutateState('saveSettings', () => {
     if (name) appSettings.appName = name;
     appSettings.securityLabel = securityLabel;
     if (typeof showRank === 'boolean') appSettings.showLevelRankInSchedule = showRank;
     appSettings.workwheelEnabled = workwheelEnabled;
     appSettings.workwheelUpcomingDays = workwheelUpcomingDays;
+    appSettings.workwheelGridDisplayMode = workwheelGridDisplayMode;
+      appSettings.myScheduleLookaheadDays = myScheduleLookaheadDays;
     persistSettings();
   });
   applyAppName();
@@ -2025,10 +2177,11 @@ async function checkForRemoteFileUpdate(options = {}) {
       }
       applyRemotePlannerData(parsedDiskData);
       setSyncStatusState('updated');
-      showToast('Colleague changes detected and loaded.', 8000, {
-        label: 'Dismiss',
-        onClick: () => {}
-      });
+      const notificationUserIds = hostedUser?.preferences?.colleagueChangeUserIds || [];
+      const actorNotificationEnabled = hostedMode && hostedUser?.preferences?.colleagueChangeNotificationsEnabled === true && (!notificationUserIds.length || notificationUserIds.includes(parsedDiskData.lastChangedByUserId));
+      if (actorNotificationEnabled) {
+        showToast('Colleague changes detected and loaded.', 8000, { label: 'Dismiss', onClick: () => {} });
+      }
       return true;
     }
     if (appSettings.autoSyncEnabled === false && !forced) {
@@ -2949,7 +3102,7 @@ function loadFromData(data) {
     ...e,
     id: +e.id,
     organisation: String(e.organisation || e.organization || '').trim(),
-    section: String(e.section || e.subdepartment || '').trim(),
+    section: String(e.section || '').trim(),
     process: String(e.process || '').trim(),
     team: String(e.team || '').trim(),
     shiftTeamId: String(e.shiftTeamId || '').trim(),
@@ -2958,7 +3111,7 @@ function loadFromData(data) {
     phonePrivate: e.phonePrivate || '',
     birthday: e.birthday || '',
     homeAddress: e.homeAddress || '',
-    subdepartment: e.subdepartment || e.team || '',
+    subdepartment: String(e.subdepartment || '').trim(),
     categoryIds: Array.isArray(e.categoryIds) && e.categoryIds.length
       ? e.categoryIds.map(Number).filter(Number.isFinite)
       : (joinCatIds[+e.id] || []),
@@ -3157,17 +3310,31 @@ function showHostedAuthScreen(mode, message = '') {
   document.getElementById('atlas-auth-screen')?.remove();
   const screen = document.createElement('div');
   screen.id = 'atlas-auth-screen';
-  screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>${mode === 'setup' ? 'Create administrator' : 'Sign in'}</h1><p class="atlas-auth-message">${message || (mode === 'setup' ? 'Create the first administrator account to secure this hosted planner.' : 'Sign in to continue.')}</p><form id="atlas-auth-form"><label>Name<input id="atlas-auth-name" autocomplete="username" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label><div id="atlas-auth-error" role="alert"></div><button type="submit">${mode === 'setup' ? 'Create administrator' : 'Sign in'}</button></form></div>`;
+  const setupFields = mode === 'setup' ? '<section class="atlas-wizard-step" data-step="1"><div class="atlas-wizard-kicker">Step 1 of 5</div><h2>Create administrator</h2><p>Create the first account that will manage this ATLAS installation.</p><label>Name<input id="atlas-auth-name" autocomplete="name" required></label><label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Email<input id="atlas-auth-email" type="email" autocomplete="email" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label></section><section class="atlas-wizard-step" data-step="2" hidden><div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation structure</h2><p>Choose the depth that best matches how your organisation is arranged.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner and can be changed later.</small></label><div class="atlas-choice-grid"><label><input type="radio" name="atlas-organisation-type" value="process-subteams" checked><b>2 levels</b><span>Process → Team</span><small>Useful for a simple team structure.</small></label><label><input type="radio" name="atlas-organisation-type" value="section-process-team"><b>3 levels</b><span>Section → Process → Team</span><small>Adds a section above processes.</small></label><label><input type="radio" name="atlas-organisation-type" value="department-section-process-team"><b>4 levels</b><span>Department → Section → Process → Team</span><small>For larger departmental structures.</small></label><label><input type="radio" name="atlas-organisation-type" value="organisation-department-section-process-team"><b>5 levels</b><span>Organisation → Department → Section → Process → Team</span><small>Full organisation hierarchy.</small></label></div></section><section class="atlas-wizard-step" data-step="3" hidden><div class="atlas-wizard-kicker">Step 3 of 5</div><h2>Shift Rotation</h2><p>Plan recurring shifts and crew rotations separately from the activity schedule. After setup, mark personnel as <b>Include in Shift Rotation</b> and optionally assign Shift Teams.</p><label class="atlas-feature-card"><input id="atlas-auth-shift-rotation" type="checkbox"><span><b>Enable Shift Rotation</b><small>Show the rotation planner and related settings.</small></span></label></section><section class="atlas-wizard-step" data-step="4" hidden><div class="atlas-wizard-kicker">Step 4 of 5</div><h2>Activity Workwheel</h2><p>Use a visual wheel for recurring meetings, deadlines, and activities for people or organisational units.</p><label class="atlas-feature-card"><input id="atlas-auth-workwheel" type="checkbox"><span><b>Enable Activity Workwheel</b><small>The current hosted Workwheel is browser-local until shared persistence is added.</small></span></label></section><section class="atlas-wizard-step" data-step="5" hidden><div class="atlas-wizard-kicker">Step 5 of 5</div><h2>Schedule check system</h2><p>Let personnel leaders check that activities and schedule entries match an external billing or verification system.</p><label class="atlas-feature-card"><input id="atlas-auth-operational-checks" type="checkbox" checked><span><b>Enable schedule check system</b><small>Responsibility scopes can be assigned to administrators after setup.</small></span></label><label>Organisation timezone<select id="atlas-auth-timezone" required><option value="UTC">UTC</option><option value="Europe/Oslo">Europe/Oslo</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/Chicago">America/Chicago</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Pacific/Auckland">Pacific/Auckland</option></select><small>Choose the IANA timezone used for organisation dates and schedule calculations.</small></section>' : '<label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="current-password" required></label>';
+  const passwordHint = mode === 'setup' ? '<small>Use at least 12 characters.</small>' : '';
+  screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>${mode === 'setup' ? 'Installation setup' : 'Sign in'}</h1><p class="atlas-auth-message">${message || (mode === 'setup' ? 'Configure this hosted planner in a few quick steps.' : 'Sign in to continue.')}</p><form id="atlas-auth-form">${setupFields}<div id="atlas-auth-error" role="alert"></div>${mode === 'setup' ? '<div class="atlas-wizard-actions"><button type="button" id="atlas-wizard-back">Back</button><button type="button" id="atlas-wizard-next" class="btn-primary">Next</button></div>' : '<button type="submit">Sign in</button>'}</form></div>`;
   document.body.appendChild(screen);
+  const organizationStep = screen.querySelector('.atlas-wizard-step[data-step="2"]');
+  if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation</h2><p>Choose the installation mode and name. Organisation depth is configured through actual personnel records.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner.</small></label><label class="atlas-checkbox"><input id="atlas-auth-multisite" type="checkbox"><span><b>Enable multisite hosting</b><small>Allow a platform administrator to provision multiple isolated organisations.</small></span></label><label id="atlas-auth-organisation-slug-row" hidden>Organisation code or slug<input id="atlas-auth-organisation-slug" maxlength="64" pattern="[a-z0-9-]+" placeholder="operations-team"><small>Lowercase letters, numbers, and hyphens only.</small></label>';
+  if (mode === 'login') screen.querySelector('#atlas-auth-form')?.insertAdjacentHTML('afterbegin', '<label>Organisation code or slug<input id="atlas-auth-organisation-slug" maxlength="64" placeholder="Leave blank for single-site hosting" autocomplete="organization"></label>');
+  screen.querySelector('#atlas-auth-multisite')?.addEventListener('change', event => { const row = screen.querySelector('#atlas-auth-organisation-slug-row'); if (row) row.hidden = !event.target.checked; });
   const form = screen.querySelector('#atlas-auth-form');
   const error = screen.querySelector('#atlas-auth-error');
+  const wizardSteps = [...screen.querySelectorAll('.atlas-wizard-step')];
+  let wizardStep = 0;
+  const showWizardStep = () => { wizardSteps.forEach((step, index) => { step.hidden = index !== wizardStep; }); const back = screen.querySelector('#atlas-wizard-back'); const next = screen.querySelector('#atlas-wizard-next'); if (back) back.disabled = wizardStep === 0; if (next) next.textContent = wizardStep === wizardSteps.length - 1 ? 'Create administrator' : 'Next'; };
+  showWizardStep();
+  screen.querySelector('#atlas-wizard-back')?.addEventListener('click', () => { if (wizardStep > 0) { wizardStep -= 1; showWizardStep(); } });
+  screen.querySelector('#atlas-wizard-next')?.addEventListener('click', () => { if (wizardStep < wizardSteps.length - 1) { wizardStep += 1; showWizardStep(); } else form.requestSubmit(); });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const button = form.querySelector('button');
     button.disabled = true;
     error.textContent = '';
     try {
-      const payload = { name: form.querySelector('#atlas-auth-name').value, password: form.querySelector('#atlas-auth-password').value };
+      const payload = { username: form.querySelector('#atlas-auth-username').value, password: form.querySelector('#atlas-auth-password').value, organizationSlug: form.querySelector('#atlas-auth-organisation-slug')?.value.trim() || undefined };
+      if (mode === 'setup') { payload.organizationName = form.querySelector('#atlas-auth-organisation-name').value.trim(); payload.multisiteEnabled = form.querySelector('#atlas-auth-multisite').checked; }
+      if (mode === 'setup') Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, organizationSlug: form.querySelector('#atlas-auth-organisation-slug')?.value.trim() || 'default', multisiteEnabled: form.querySelector('#atlas-auth-multisite')?.checked === true, timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
       const endpoint = mode === 'setup' ? '/api/setup/create-admin' : '/api/auth/login';
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json().catch(() => ({}));
@@ -3175,6 +3342,12 @@ function showHostedAuthScreen(mode, message = '') {
       hostedUser = result.user;
       screen.remove();
       await loadHostedPlanner();
+      if (mode === 'setup') {
+        appSettings.appName = form.querySelector('#atlas-auth-organisation-name').value.trim();
+        applyAppName();
+        await saveState(true);
+        renderPage();
+      }
     } catch (err) {
       error.textContent = err.message || 'Authentication failed.';
       button.disabled = false;
@@ -3219,8 +3392,18 @@ async function authenticateHostedApp() {
   const meResponse = await fetch('/api/auth/me', { cache: 'no-store' });
   if (meResponse.ok) {
     const auth = await meResponse.json();
-    hostedUser = auth.user;
+    hostedUser = { ...auth.user, preferences: auth.user.preferences, availableUsers: auth.user.availableUsers || [] };
+    if (auth.user.preferences) {
+      appSettings.jumpToTodayOnGridChange = auth.user.preferences.jumpToTodayOnGridChange !== false;
+      appSettings.darkMode = auth.user.preferences.darkMode === true;
+      applyAppZoom(auth.user.preferences.zoom);
+      applyTheme();
+    }
     operationalChecksEnabled = auth.operationalChecksEnabled !== false;
+    if (auth.installation) {
+      appSettings.shiftRotationEnabled = auth.installation.shiftRotationEnabled === true;
+      appSettings.workwheelEnabled = auth.installation.workwheelEnabled === true;
+    }
     return true;
   }
   showHostedAuthScreen('login');
@@ -3966,7 +4149,7 @@ function displayEmployeeNameMarkup(employee) {
   return `<span title="${esc(fullName)}">${content}</span>`;
 }
 function employeeHierarchyLeaf(employee) {
-  return [employee?.section || employee?.subdepartment, employee?.process, employee?.team].filter(Boolean).join(' / ');
+  return [employee?.section, employee?.process, employee?.team].filter(Boolean).join(' / ');
 }
 function comparePersonnelHierarchy(left, right) {
   const organisationComparison = String(left?.organisation || '').localeCompare(String(right?.organisation || ''), 'nb', { sensitivity: 'base' });
@@ -4331,7 +4514,8 @@ async function renderMyUpcoming() {
   const content = document.getElementById('content');
   content.innerHTML = '<div class="personal-view"><div class="personal-loading">Loading your upcoming schedule…</div></div>';
   try {
-    const response = await fetch('/api/me/upcoming?days=14', { cache: 'no-store' });
+    const lookaheadDays = Math.max(1, Math.min(365, Number(appSettings.myScheduleLookaheadDays) || 31));
+    const response = await fetch(`/api/me/upcoming?days=${lookaheadDays}`, { cache: 'no-store' });
     if (!response.ok) throw new Error('Could not load your upcoming schedule.');
     personalUpcomingData = await response.json();
     if (!personalUpcomingData.linked) {
@@ -4339,8 +4523,8 @@ async function renderMyUpcoming() {
       return;
     }
     const dateFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-    const eventDays = personalUpcomingData.days.filter(day => day.status);
-    content.innerHTML = `<div class="personal-view"><div class="personal-header"><div><div class="eyebrow">YOUR NEXT 14 DAYS</div><h1>${esc(personalUpcomingData.employee.name)}</h1><p>${esc([personalUpcomingData.employee.role, personalUpcomingData.employee.department, personalUpcomingData.employee.section].filter(Boolean).join(' · '))}</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" onclick="openAbsenceRequestPrompt()">Request absence</button><div class="personal-range">${esc(personalUpcomingData.startDate)} — ${esc(personalUpcomingData.endDate)}</div></div></div><div class="personal-days">${eventDays.length ? eventDays.map(day => `<section class="personal-day"><div class="personal-day-heading"><h2>${esc(dateFormatter.format(new Date(`${day.date}T12:00:00`)))}</h2><span>${esc(day.date)}</span></div><div class="personal-items">${renderPersonalDayItems(day)}</div></section>`).join('') : '<div class="personal-empty"><h2>No upcoming status entries</h2><p>You have no status codes recorded during the next 14 days.</p></div>'}</div></div>`;
+    const eventDays = personalUpcomingData.days.filter(day => day.status || day.activities?.length || day.workwheelMeetings?.length);
+    content.innerHTML = `<div class="personal-view"><div class="personal-header"><div><div class="eyebrow">YOUR NEXT ${lookaheadDays} DAYS</div><h1>${esc(personalUpcomingData.employee.name)}</h1><p>${esc([personalUpcomingData.employee.role, personalUpcomingData.employee.department, personalUpcomingData.employee.section].filter(Boolean).join(' · '))}</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" onclick="openAbsenceRequestPrompt()">Request absence</button><div class="personal-range">${esc(personalUpcomingData.startDate)} — ${esc(personalUpcomingData.endDate)}</div></div></div><div class="personal-days">${eventDays.length ? eventDays.map(day => `<section class="personal-day"><div class="personal-day-heading"><h2>${esc(dateFormatter.format(new Date(`${day.date}T12:00:00`)))}</h2><span>${esc(day.date)}</span></div><div class="personal-items">${renderPersonalDayItems(day)}</div></section>`).join('') : '<div class="personal-empty"><h2>No upcoming status entries</h2><p>You have no status codes recorded during the selected lookahead.</p></div>'}</div></div>`;
   } catch (error) { content.innerHTML = `<div class="personal-view"><div class="personal-empty"><h2>Unable to load your schedule</h2><p>${esc(error.message || 'Please try again.')}</p></div></div>`; }
 }
 async function openAbsenceRequestPrompt() {
@@ -4373,6 +4557,7 @@ function renderPersonalDayItems(day) {
   const items = [];
   if (day.status) items.push(`<article class="personal-item personal-status"><span class="personal-dot" style="background:${esc(day.status.color)}"></span><div><strong>${esc(day.status.label)}</strong><small>${day.status.isAbsence ? 'Absence' : day.status.isOutOfOffice ? 'Out of office' : 'Daily status'} · ${esc(day.status.lifecycle || 'confirmed')}</small></div>${day.status.time ? `<b>${esc(day.status.time)}</b>` : ''}</article>`);
   for (const activity of day.activities || []) items.push(`<article class="personal-item personal-activity ${activity.status === 'cancelled' ? 'is-cancelled' : ''}"><span class="personal-dot" style="background:${esc(activity.color)}"></span><div><strong>${esc(activity.name)}${activity.status === 'cancelled' ? ' · Cancelled' : ''}</strong><small>${esc(activity.abbreviation || '')}${activity.assignment?.shift ? ` · ${esc(activity.assignment.shift)}` : ''}${activity.assignment?.workCode?.abbreviation ? ` · ${esc(activity.assignment.workCode.abbreviation)}` : ''}</small></div></article>`);
+  for (const meeting of day.workwheelMeetings || []) items.push(`<article class="personal-item personal-workwheel ${meeting.status === 'cancelled' ? 'is-cancelled' : ''}"><span class="personal-dot" style="background:${esc(meeting.color)}"></span><div><strong>${esc(meeting.title)}${meeting.status === 'cancelled' ? ' · Cancelled' : ''}</strong><small>Workwheel · ${esc(meeting.wheelName)} · ${esc(meeting.status)}</small></div>${meeting.time ? `<b>${esc(meeting.time)}</b>` : '<b>All day</b>'}</article>`);
   return items.join('') || '<div class="personal-no-items">No activities or status entries.</div>';
 }
 function renderBugReport() {
@@ -4757,7 +4942,7 @@ function renderGrid() {
         </div>
         <div class="flex items-center gap-2 schedule-topbar-controls">
           <button class="btn btn-sm" onclick="goToday()">Today</button>
-          <label class="btn btn-sm schedule-date-jump-button" title="Jump to a specific date"><span>Jump…</span>${svgIcon('teamSchedule')}<input id="schedule-date-jump-input" class="schedule-date-jump-input" type="date" value="${gridPeriod === 'year' ? `${gridYear}-01-01` : scheduleAnchorDate}" onchange="jumpToScheduleDate(this.value)" aria-label="Jump to date"></label>
+          <label class="btn btn-sm schedule-date-jump-button" title="Jump to a specific date"><span>Jump…</span>${svgIcon('teamSchedule')}<input id="schedule-date-jump-input" class="schedule-date-jump-input" type="date" value="${scheduleAnchorDate}" onchange="jumpToScheduleDate(this.value)" oninput="jumpToScheduleDate(this.value)" aria-label="Jump to date"></label>
           <select class="plain-select" style="height:32px;padding:5px 7px;width:76px" onchange="applyAppZoom(this.value)" aria-label="Application zoom" title="Local application zoom">
             ${[80,90,100,110,125,150,175].map(value => `<option value="${value}" ${appZoom === value ? 'selected' : ''}>${value}%</option>`).join('')}
           </select>
@@ -5268,6 +5453,20 @@ function cellActivities(empId, ds) {
     })
     .sort((a, b) => a.id - b.id);
 }
+function workwheelCellEvents(empId, ds) {
+  if (typeof workwheelState === 'undefined') return [];
+  const mode = ['cells', 'both', 'row'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
+  if (mode === 'row') return [];
+  return workwheelState.activities.filter(activity => {
+    const participant = (activity.participantIds || []).map(Number).includes(Number(empId));
+    const responsible = activity.responsibleMode !== 'external' && Number(activity.responsibleId) === Number(empId);
+    if (!participant && !responsible || !activity.date || ds < activity.date || ds > (activity.endDate || activity.date)) return false;
+    if (activity.recurrence === 'none') return ds === activity.date;
+    const start = new Date(`${activity.date}T00:00:00`), current = new Date(`${ds}T00:00:00`);
+    const elapsed = Math.round((current - start) / 86400000);
+    return elapsed >= 0 && ((activity.recurrence === 'daily') || (activity.recurrence === 'weekly' && elapsed % 7 === 0) || (activity.recurrence === 'fortnightly' && elapsed % 14 === 0) || (activity.recurrence === 'monthly' && current.getDate() === start.getDate()));
+  });
+}
 // All participant activities for the date regardless of shift/work-code assignment, so boss checks aren't limited to assigned cells.
 function participantActivitiesForDate(empId, ds) {
   return activities.filter(act => ds >= act.startDate && ds <= act.endDate && participantFor(act, empId));
@@ -5311,7 +5510,7 @@ function isEmployeeBirthday(emp, dateString) {
   return birthday.getMonth() === date.getMonth() && birthday.getDate() === date.getDate();
 }
 function activityDisplayName(activity, maxLength = 25) {
-  const name = String(activity?.name || '').trim();
+  const name = `${activity?.source === 'workwheel' || activity?.sourceActivityId != null ? '↻ ' : ''}${String(activity?.name || '').trim()}`;
   const characters = Array.from(name);
   if (characters.length <= maxLength) return name;
   return `${characters.slice(0, Math.max(1, maxLength - 1)).join('')}…`;
@@ -5340,6 +5539,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const isPartial = entry?.durationType === 'time';
   const isPlannedStatus = statusEntryIsPlanned(entry);
   const acts = cellActivities(emp.id, ds);
+  const workwheelEvents = workwheelCellEvents(emp.id, ds);
   const rotation = rotationRecord(emp.id, ds);
   const rotationMeta = rotationShiftMeta(rotation?.shift);
   const birthday = isEmployeeBirthday(emp, ds);
@@ -5373,9 +5573,11 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   if (overtime) tipParts.push(`Overtime: ${formatHoursNumber(overtime.hours)}h${overtime.note ? ` (${overtime.note})` : ''}`);
   if (cellNote) tipParts.push(`Note: ${cellNote}`);
   if (birthday) tipParts.push(`Birthday: ${emp.name}`);
+  workwheelEvents.forEach(event => tipParts.push(`Workwheel: ${event.title}${event.startTime && event.endTime ? `\nTime: ${event.startTime}–${event.endTime}` : '\nAll day'}`));
   if (!tipParts.length) tipParts.push('Click to set status');
 
   const primaryActivity = rotationMeta ? null : acts[0];
+  const workwheelMarker = workwheelEvents.length ? `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(workwheelEvents[0].color || '#3b82f6')}" title="${esc(workwheelEvents.map(event => event.title).join('\n'))}">◉${workwheelEvents.length > 1 ? `<small>${workwheelEvents.length}</small>` : ''}</span>` : '';
   const checkedActivity = bossSessionActive ? participantActivitiesForDate(emp.id, ds).find(act => activityRelevantToEmployee(act, emp) && isBossCheckSet(emp.id, ds, 'activity', act.id)) : null;
   const checkedStatus = bossSessionActive && si && isBossCheckSet(emp.id, ds, 'status', si.key) ? si : null;
   const activitySpanDays = primaryActivity ? Math.max(1, Math.round((new Date(`${primaryActivity.endDate}T00:00:00`) - new Date(`${primaryActivity.startDate}T00:00:00`)) / 86400000) + 1) : 1;
@@ -5441,7 +5643,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
     data-empid="${emp.id}" data-date="${ds}" title="${esc(tipParts.join('\n'))}" style="--shift-color:${activityColor};--activity-color:${primaryActivity?.color || 'transparent'};--holiday-color:${holiday?.color || '#ef4444'};${finalCellStyle}"
     onpointerdown="startCellSelection(event,${emp.id},'${ds}')"
      onclick="handleCellClick(event,${emp.id},'${ds}')"
-  oncontextmenu="openPicker(event,${emp.id},'${ds}'); return false;">${rotationMarker}${rotation ? '' : `${dot}${activityStatusBadge}${shiftSymbol}${overtimeBadge}${workScheduleCheckBadge}${adminCheckButton}`}<div class="gday-inner" style="${rotationMeta ? 'color:var(--accent-blue);font-weight:800;' : `${activityTextStyle}${cancelledTextStyle}`}">${rotationMeta ? '' : esc(cellText)}${rotation ? '' : birthdayBadge}</div></td>`;
+  oncontextmenu="openPicker(event,${emp.id},'${ds}'); return false;">${rotationMarker}${rotation ? '' : `${dot}${activityStatusBadge}${shiftSymbol}${overtimeBadge}${workScheduleCheckBadge}${adminCheckButton}`}<div class="gday-inner" style="${rotationMeta ? 'color:var(--accent-blue);font-weight:800;' : `${activityTextStyle}${cancelledTextStyle}`}"">${rotationMeta ? '' : esc(cellText)}${rotation ? '' : birthdayBadge}</div>${workwheelMarker}</td>`;
 }
 
 // The compact rotationMarker is the sole SR/OFF/OT label in Schedule cells.
@@ -5491,6 +5693,7 @@ function jumpToScheduleDate(value) {
   const target = new Date(`${value}T00:00:00`);
   if (gridPeriod === 'year') {
     gridYear = target.getFullYear();
+    scheduleAnchorDate = value;
   } else {
     scheduleAnchorDate = value;
   }
@@ -5499,6 +5702,11 @@ function jumpToScheduleDate(value) {
   setTimeout(() => {
     const scroll = document.getElementById('grid-scroll');
     const header = scroll?.querySelector(`th[data-date="${value}"]`);
+    if (gridPeriod === 'year' && !header) {
+      const firstHeader = scroll?.querySelector('th[data-date]');
+      if (firstHeader) firstHeader.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      return;
+    }
     if (!scroll || !header) return;
     document.querySelectorAll('.jump-date-highlight').forEach(element => element.classList.remove('jump-date-highlight'));
     scroll.querySelectorAll(`[data-date="${value}"]`).forEach(element => element.classList.add('jump-date-highlight'));
@@ -6241,6 +6449,7 @@ document.addEventListener('click', e => {
 
 // ═══ STATUS MANAGER ══════════════════════════════════════════════════════════
 function openStatusManager() {
+  if (!document.getElementById('status-modal')?.classList.contains('open')) openSettingsChild('status-modal', 'settings-modal');
   resetStatusForm();
   resetDailyStatusForm();
   resetWorkCodeForm();
@@ -6523,8 +6732,8 @@ function toggleParticipant(id, checked) {
   buildParticipantPicker();
 }
 function openActModal(id) {
-  editingActId = id || null;
-  const act = id ? activities.find(a => a.id === id) : null;
+  editingActId = id === undefined || id === null || id === '' ? null : Number(id);
+  const act = editingActId === null ? null : activities.find(a => a.id === editingActId);
   const relevance = activityRelevance(act);
   const departmentOptions = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort();
   const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort();
@@ -6555,7 +6764,7 @@ function openActModal(id) {
   updateActivityWeekLabels();
   document.getElementById('af-notes').value = act?.notes || '';
   selectedActColor = act?.color || PALETTE[0];
-  selectedParticipants = act ? act.participants.map(p => ({ id: p.id })) : [];
+  selectedParticipants = act ? (act.participants || []).map(p => ({ id: Number(p.id) })).filter(p => Number.isFinite(p.id)) : [];
   document.getElementById('af-prefill-cells').checked = false;
   if (!act && preset?.participantId && employees.some(emp => emp.id === preset.participantId)) {
     selectedParticipants = [{ id: preset.participantId }];
@@ -6643,7 +6852,7 @@ async function saveActivity() {
   const rec = { name, abbreviation: abbr, project, order, billing, type, status, countsTowardLoad, dayShift, eveningShift, nightShift, includeWeekends, relevance, color: selectedActColor, startDate: start, endDate: end,
     participants: selectedParticipants.map(p => ({ ...p })), notes };
   await mutateState('saveActivity', () => {
-  if (editingActId) {
+  if (editingActId !== null) {
     rec.id = editingActId;
     const idx = activities.findIndex(a => a.id === editingActId);
     if (idx !== -1) activities[idx] = rec; else activities.push(rec);
@@ -6698,7 +6907,7 @@ async function saveActivity() {
   renderPage();
 }
 function requestDeleteActivityFromModal() {
-  if (!editingActId) return;
+  if (editingActId === null) return;
   closeModal('act-modal');
   confirmDelete('activity', editingActId);
 }
@@ -7762,9 +7971,10 @@ function renderEmployees() {
         rowsHtml += `<tr class="dept-row"><td colspan="10" style="background:${deptColor}22;border-bottom:2px solid ${deptColor};color:var(--text);font-weight:700"><button class="icon-btn" type="button" onclick="togglePersonnelDepartment(${esc(JSON.stringify(group.organisation))},${esc(JSON.stringify(group.department))})">${svgIcon(departmentCollapsed ? 'chevronRight' : 'chevronDown')}</button>${esc(group.department)} <span style="font-weight:400;text-transform:none">· ${departmentPeople} ${departmentPeople === 1 ? 'person' : 'people'}</span></td></tr>`;
       }
       if (group.department && collapsedPersonnelDepartments.has(personnelDepartmentKey(group.organisation, group.department))) continue;
-      const sectionName = group.list[0]?.section || group.list[0]?.subdepartment || group.subdepartment || '';
+      const sectionName = group.list[0]?.section || group.subdepartment || '';
       const processName = group.list[0]?.process || '';
-      const sectionHeading = [sectionName, processName].filter(Boolean).join(' / ');
+      const departmentGroupCount = groups.filter(candidate => candidate.organisation === group.organisation && candidate.department === group.department).length;
+      const sectionHeading = [sectionName, processName].filter(Boolean).join(' / ') || (departmentGroupCount > 1 ? 'Unassigned section / process / team' : '');
       const sectionColor = resolveSectionColor(group.department, sectionName) || deptColor;
       const sectionKey = personnelSectionKey(group.organisation, group.department, sectionName);
       const sectionCollapsed = collapsedPersonnelSections.has(sectionKey);
@@ -9356,11 +9566,35 @@ function returnToActivityDraft(typeKey = null) {
   if (typeKey !== null) buildActivityTypeOptions(typeKey);
   document.getElementById('act-modal').classList.add('open');
 }
+let settingsModalStack = [];
+function openSettingsChild(childId, parentId = null) {
+  const parent = parentId || settingsModalStack.at(-1) || null;
+  if (parent && document.getElementById(parent)?.classList.contains('open')) settingsModalStack.push(parent);
+  document.querySelectorAll('.modal-bg.settings-flow-open').forEach(modal => modal.classList.remove('open', 'settings-flow-open'));
+  document.getElementById(childId)?.classList.add('open', 'settings-flow-open');
+  updateSettingsBackButtons();
+}
+function goBackSettings() {
+  document.querySelector('.modal-bg.settings-flow-open.open')?.classList.remove('open', 'settings-flow-open');
+  const parentId = settingsModalStack.pop();
+  if (parentId) document.getElementById(parentId)?.classList.add('open', 'settings-flow-open');
+  updateSettingsBackButtons();
+}
+function resetSettingsModalStack() {
+  settingsModalStack = [];
+  document.querySelectorAll('.modal-bg.settings-flow-open').forEach(modal => modal.classList.remove('open', 'settings-flow-open'));
+}
+function updateSettingsBackButtons() {
+  document.querySelectorAll('[data-settings-back]').forEach(button => { button.style.display = settingsModalStack.length ? '' : 'none'; });
+}
 function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
+  const modal = document.getElementById(id);
+  modal?.classList.remove('open');
   if (id === 'status-modal' && quickActivityTypeReturn) returnToActivityDraft();
+  if (id === 'settings-modal' || modal?.classList.contains('settings-flow-open')) resetSettingsModalStack();
 }
 document.getElementById('account-form')?.addEventListener('submit', saveHostedUser);
+document.getElementById('personal-settings-form')?.addEventListener('submit', savePersonalSettings);
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('mousedown', e => {
     if (e.target === bg) closeModal(bg.id);

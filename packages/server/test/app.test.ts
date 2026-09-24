@@ -18,7 +18,7 @@ test('hosted setup, login, and protected planner access', async () => {
     const setup = await app.inject({
       method: 'POST',
       url: '/api/setup/create-admin',
-      payload: { name: 'Ada', password: 'correct horse battery staple' },
+      payload: { name: 'Ada Lovelace', username: 'ada', email: 'ada@example.test', password: 'correct horse battery staple' },
     });
     assert.equal(setup.statusCode, 201);
     assert.equal(setup.json().user.role, 'admin');
@@ -27,7 +27,7 @@ test('hosted setup, login, and protected planner access', async () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/auth/login',
-      payload: { name: 'Ada', password: 'correct horse battery staple' },
+      payload: { username: 'ada', password: 'correct horse battery staple' },
     });
     assert.equal(login.statusCode, 200);
     const cookie = login.headers['set-cookie'];
@@ -44,7 +44,7 @@ test('hosted setup, login, and protected planner access', async () => {
     const secondSetup = await app.inject({
       method: 'POST',
       url: '/api/setup/create-admin',
-      payload: { name: 'Grace', password: 'another correct password' },
+      payload: { name: 'Grace Hopper', username: 'grace', email: 'grace@example.test', password: 'another correct password' },
     });
     assert.equal(secondSetup.statusCode, 409);
   } finally {

@@ -64,7 +64,7 @@ Linked accounts receive a **My upcoming** sidebar view showing the next 14 calen
 
 ### Administrator review responsibility
 
-Administrators can optionally receive an explicit responsibility scope for a canonical organisation branch, such as `JTCC` or `JTCC / JDLOC`. A scope is intended for the Admin change-review queue and includes descendants. It does not currently restrict the Admin's broader planner editing permissions. Global administrators can assign or remove scopes; a scoped administrator cannot widen their own responsibility. An Admin with no scope remains global by default.
+Administrators can optionally receive an explicit responsibility scope for a canonical organisation branch. A scope is intended for the Admin change-review queue and includes descendants. It does not currently restrict the Admin's broader planner editing permissions. Global administrators can assign or remove scopes; a scoped administrator cannot widen their own responsibility. An Admin with no scope remains global by default.
 
 The Dashboard includes an Admin-only **My employees’ changes** card. It lists recent operational cell and activity changes, identifies the actor and time, and provides a full review modal. Selecting a schedule-cell change opens the Schedule at its date and temporarily highlights the affected cell in red. This review feed is separate from legacy Boss View work-schedule check marks.
 

@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
+import { existsSync, statSync } from 'node:fs';
 import {
   createBlankPlannerDocument,
   createInitialState,
@@ -15,6 +16,8 @@ export interface AtlasUserRecord {
   readonly id: string;
   readonly externalId: string | null;
   readonly name: string;
+  readonly username?: string;
+  readonly email?: string;
   readonly role: 'admin' | 'planner' | 'viewer';
 }
 
@@ -22,6 +25,40 @@ export interface AuthUserRecord extends AtlasUserRecord {
   readonly disabled: boolean;
   readonly createdAt: string;
   readonly employeeId: number | null;
+}
+
+export interface UserPreferencesRecord {
+  readonly jumpToTodayOnGridChange: boolean;
+  readonly darkMode: boolean;
+  readonly zoom: number;
+  readonly colleagueChangeNotificationsEnabled: boolean;
+  readonly colleagueChangeUserIds: readonly string[];
+}
+
+export interface InstallationSettingsRecord {
+  readonly organizationType: 'process-subteams' | 'section-process-team' | 'department-section-process-team' | 'organisation-department-section-process-team';
+  readonly organizationName: string;
+  readonly organizationSlug: string;
+  readonly multisiteEnabled: boolean;
+  readonly timezone: string;
+  readonly shiftRotationEnabled: boolean;
+  readonly workwheelEnabled: boolean;
+  readonly operationalChecksEnabled: boolean;
+}
+
+export interface DatabaseStatisticsRecord {
+  readonly generatedAt: string;
+  readonly storage: { readonly databaseBytes: number; readonly walBytes: number; readonly shmBytes: number; readonly totalBytes: number; readonly modifiedAt: string | null };
+  readonly records: { readonly users: number; readonly personnel: number; readonly activities: number; readonly scheduleEntries: number; readonly statuses: number; readonly categories: number; readonly absenceRequests: number };
+  readonly users: { readonly onlineNow: number; readonly recentlyActive: number; readonly neverActive: number; readonly disabled: number };
+  readonly changes: { readonly planner24h: number; readonly planner7d: number; readonly audit24h: number; readonly audit7d: number };
+  readonly health: { readonly sqliteVersion: string; readonly journalMode: string; readonly schemaVersion: number; readonly integrityCheck: string };
+}
+
+export interface WorkwheelDocumentRecord {
+  readonly revision: number;
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly updatedAt: string;
 }
 
 export interface AuthSessionRecord {
@@ -124,11 +161,20 @@ export interface AtlasDatabase {
   countAdmins(): number;
   isSetupRequired(): boolean;
   getOperationalChecksEnabled(): boolean;
+  getInstallationSettings(): InstallationSettingsRecord;
+  setInstallationOrganization(input: { readonly name: string; readonly slug: string; readonly multisiteEnabled: boolean }): void;
+  getDatabaseStatistics(): DatabaseStatisticsRecord;
+  getWorkwheel(): WorkwheelDocumentRecord;
+  saveWorkwheel(document: Readonly<Record<string, unknown>>, expectedRevision: number): WorkwheelDocumentRecord;
+  touchUserActivity(userId: string, login?: boolean): void;
   setOperationalChecksEnabled(enabled: boolean): void;
-  createInitialAdmin(name: string, password: string): AuthUserRecord;
+  createInitialAdmin(user: { readonly name: string; readonly username: string; readonly email: string; readonly password: string; readonly organizationType?: InstallationSettingsRecord['organizationType']; readonly timezone?: string; readonly shiftRotationEnabled?: boolean; readonly workwheelEnabled?: boolean; readonly operationalChecksEnabled?: boolean }): AuthUserRecord;
   verifyUserPassword(userId: string, password: string): boolean;
-  createUser(user: { readonly id?: string; readonly name: string; readonly role: AtlasUserRecord['role']; readonly password: string }): AuthUserRecord;
-  updateUser(userId: string, changes: { readonly name?: string; readonly role?: AtlasUserRecord['role']; readonly disabled?: boolean; readonly password?: string }): AuthUserRecord;
+  createUser(user: { readonly id?: string; readonly name: string; readonly username: string; readonly email: string; readonly role: AtlasUserRecord['role']; readonly password: string }): AuthUserRecord;
+  updateUser(userId: string, changes: { readonly name?: string; readonly username?: string; readonly email?: string; readonly role?: AtlasUserRecord['role']; readonly disabled?: boolean; readonly password?: string }): AuthUserRecord;
+  getUserPreferences(userId: string): UserPreferencesRecord;
+  updateUserPreferences(userId: string, changes: Partial<UserPreferencesRecord>): UserPreferencesRecord;
+  factoryReset(): void;
   deleteUser(userId: string): void;
   createAuthSession(userId: string, token: string, expiresAt: string): void;
   getAuthSession(token: string): AuthSessionRecord | null;
@@ -174,11 +220,13 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
   migrate(database);
 
   const upsertUser = database.prepare(`
-    INSERT INTO users (id, external_id, name, role)
-    VALUES (@id, @externalId, @name, @role)
+    INSERT INTO users (id, external_id, name, username, email, role)
+    VALUES (@id, @externalId, @name, @username, @email, @role)
     ON CONFLICT(id) DO UPDATE SET
       external_id = excluded.external_id,
       name = excluded.name,
+      username = excluded.username,
+      email = excluded.email,
       role = excluded.role
   `);
   const insertSession = database.prepare(`
@@ -186,8 +234,8 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
     VALUES (@id, @userId, @tokenHash, @expiresAt, @createdAt, @revokedAt)
   `);
   const revokeSession = database.prepare('UPDATE sessions SET revoked_at = ? WHERE id = ?');
-  const selectUser = database.prepare(`SELECT u.id, u.external_id AS externalId, u.name, u.role, u.disabled, u.created_at AS createdAt, upl.employee_id AS employeeId FROM users u LEFT JOIN user_personnel_links upl ON upl.user_id = u.id WHERE u.id = ?`);
-  const selectUsers = database.prepare(`SELECT u.id, u.external_id AS externalId, u.name, u.role, u.disabled, u.created_at AS createdAt, upl.employee_id AS employeeId FROM users u LEFT JOIN user_personnel_links upl ON upl.user_id = u.id ORDER BY u.name`);
+  const selectUser = database.prepare(`SELECT u.id, u.external_id AS externalId, u.name, u.username, u.email, u.role, u.disabled, u.created_at AS createdAt, upl.employee_id AS employeeId FROM users u LEFT JOIN user_personnel_links upl ON upl.user_id = u.id WHERE u.id = ?`);
+  const selectUsers = database.prepare(`SELECT u.id, u.external_id AS externalId, u.name, u.username, u.email, u.role, u.disabled, u.created_at AS createdAt, upl.employee_id AS employeeId FROM users u LEFT JOIN user_personnel_links upl ON upl.user_id = u.id ORDER BY u.name`);
   const selectUserLink = database.prepare(`SELECT employee_id AS employeeId FROM user_personnel_links WHERE user_id = ?`);
   const upsertUserLink = database.prepare(`INSERT INTO user_personnel_links (user_id, employee_id, linked_at, linked_by_user_id) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET employee_id = excluded.employee_id, linked_at = excluded.linked_at, linked_by_user_id = excluded.linked_by_user_id`);
   const deleteUserLink = database.prepare(`DELETE FROM user_personnel_links WHERE user_id = ?`);
@@ -303,7 +351,7 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
       return String(row).toLowerCase();
     },
     upsertUser: (user) => {
-      upsertUser.run(user);
+      upsertUser.run({ ...user, username: user.username ?? user.name.toLowerCase().replace(/\s+/g, '.'), email: user.email ?? `${user.username ?? user.name.toLowerCase().replace(/\s+/g, '.')}@local.invalid` });
     },
     getUserById: (id) => selectUser.get(id) as AuthUserRecord | undefined ?? null,
     listUsers: () => selectUsers.all() as AuthUserRecord[],
@@ -337,16 +385,62 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
       return row?.setupCompletedAt == null;
     },
     getOperationalChecksEnabled: () => Boolean((selectChecksEnabled.get() as { enabled: number } | undefined)?.enabled ?? 1),
+    getInstallationSettings: () => {
+      const row = database.prepare(`SELECT organization_type AS organizationType, organization_name AS organizationName, organization_slug AS organizationSlug, multisite_enabled AS multisiteEnabled, timezone, shift_rotation_enabled AS shiftRotationEnabled, workwheel_enabled AS workwheelEnabled, operational_checks_enabled AS operationalChecksEnabled FROM installation_settings WHERE id = 'default'`).get() as { organizationType?: InstallationSettingsRecord['organizationType']; organizationName?: string; organizationSlug?: string; multisiteEnabled?: number; timezone?: string; shiftRotationEnabled?: number; workwheelEnabled?: number; operationalChecksEnabled?: number } | undefined;
+      return { organizationType: row?.organizationType === 'section-process-team' || row?.organizationType === 'department-section-process-team' || row?.organizationType === 'organisation-department-section-process-team' ? row.organizationType : 'process-subteams', organizationName: row?.organizationName ?? 'Organisation', organizationSlug: row?.organizationSlug ?? 'default', multisiteEnabled: Boolean(row?.multisiteEnabled), timezone: row?.timezone ?? 'UTC', shiftRotationEnabled: Boolean(row?.shiftRotationEnabled), workwheelEnabled: Boolean(row?.workwheelEnabled), operationalChecksEnabled: Boolean(row?.operationalChecksEnabled ?? 1) };
+    },
+    setInstallationOrganization: ({ name, slug, multisiteEnabled }) => { database.prepare(`UPDATE installation_settings SET organization_name = ?, organization_slug = ?, multisite_enabled = ? WHERE id = 'default'`).run(name.trim(), slug.trim().toLowerCase(), multisiteEnabled ? 1 : 0); },
+    getDatabaseStatistics: () => {
+      const now = Date.now();
+      const cutoff5m = new Date(now - 5 * 60 * 1000).toISOString();
+      const cutoff24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+      const cutoff7d = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const count = (sql: string): number => Number((database.prepare(sql).get() as { count: number }).count);
+      const fileStats = (path: string) => existsSync(path) ? statSync(path) : null;
+      const main = fileStats(filename);
+      const wal = fileStats(`${filename}-wal`);
+      const shm = fileStats(`${filename}-shm`);
+      const planner = JSON.parse((database.prepare(`SELECT document_json AS documentJson FROM planner_documents WHERE id = 'default'`).get() as { documentJson?: string } | undefined)?.documentJson ?? '{}') as { employees?: unknown[]; activities?: unknown[]; statuses?: unknown[]; categories?: unknown[]; entriesMap?: Record<string, unknown> };
+      const sqliteVersion = String((database.prepare('SELECT sqlite_version() AS version').get() as { version: string }).version);
+      const schemaVersion = Number((database.prepare('SELECT max(version) AS version FROM schema_migrations').get() as { version: number }).version ?? 0);
+      const integrityCheck = String((database.prepare('PRAGMA integrity_check').get() as { integrity_check?: string })?.integrity_check ?? 'unavailable');
+      return {
+        generatedAt: new Date(now).toISOString(),
+        storage: { databaseBytes: main?.size ?? 0, walBytes: wal?.size ?? 0, shmBytes: shm?.size ?? 0, totalBytes: (main?.size ?? 0) + (wal?.size ?? 0) + (shm?.size ?? 0), modifiedAt: main?.mtime.toISOString() ?? null },
+        records: { users: count('SELECT count(*) AS count FROM users'), personnel: planner.employees?.length ?? 0, activities: planner.activities?.length ?? 0, scheduleEntries: Object.keys(planner.entriesMap ?? {}).length, statuses: planner.statuses?.length ?? 0, categories: planner.categories?.length ?? 0, absenceRequests: count('SELECT count(*) AS count FROM absence_requests') },
+        users: { onlineNow: count(`SELECT count(*) AS count FROM users WHERE disabled = 0 AND last_active_at >= '${cutoff5m}'`), recentlyActive: count(`SELECT count(*) AS count FROM users WHERE disabled = 0 AND last_active_at >= '${cutoff7d}'`), neverActive: count(`SELECT count(*) AS count FROM users WHERE last_active_at IS NULL`), disabled: count('SELECT count(*) AS count FROM users WHERE disabled = 1') },
+        changes: { planner24h: count(`SELECT count(*) AS count FROM planner_change_events WHERE occurred_at >= '${cutoff24h}'`), planner7d: count(`SELECT count(*) AS count FROM planner_change_events WHERE occurred_at >= '${cutoff7d}'`), audit24h: count(`SELECT count(*) AS count FROM audit_logs WHERE timestamp >= '${cutoff24h}'`), audit7d: count(`SELECT count(*) AS count FROM audit_logs WHERE timestamp >= '${cutoff7d}'`) },
+        health: { sqliteVersion, journalMode: String(database.pragma('journal_mode', { simple: true })), schemaVersion, integrityCheck },
+      };
+    },
+    getWorkwheel: () => {
+      const row = database.prepare(`SELECT revision, document_json AS documentJson, updated_at AS updatedAt FROM workwheel_documents WHERE id = 'default'`).get() as { revision: number; documentJson: string; updatedAt: string } | undefined;
+      if (row) return { revision: row.revision, document: JSON.parse(row.documentJson), updatedAt: row.updatedAt };
+      const updatedAt = new Date().toISOString();
+      const document = { version: 1, wheels: [], activities: [], availableActivities: [] };
+      database.prepare(`INSERT INTO workwheel_documents (id, revision, document_json, updated_at) VALUES ('default', 1, ?, ?)`).run(JSON.stringify(document), updatedAt);
+      return { revision: 1, document, updatedAt };
+    },
+    saveWorkwheel: (document, expectedRevision) => {
+      const updatedAt = new Date().toISOString();
+      const result = database.prepare(`UPDATE workwheel_documents SET revision = revision + 1, document_json = ?, updated_at = ? WHERE id = 'default' AND revision = ?`).run(JSON.stringify(document), updatedAt, expectedRevision);
+      if (result.changes !== 1) throw new Error('WORKWHEEL_REVISION_CONFLICT');
+      return { revision: expectedRevision + 1, document, updatedAt };
+    },
+    touchUserActivity: (userId, login = false) => {
+      const now = new Date().toISOString();
+      database.prepare(`UPDATE users SET last_active_at = ?, last_login_at = CASE WHEN ? THEN ? ELSE last_login_at END, updated_at = ? WHERE id = ?`).run(now, login ? 1 : 0, now, now, userId);
+    },
     setOperationalChecksEnabled: (enabled) => { database.prepare(`UPDATE installation_settings SET operational_checks_enabled = ? WHERE id = 'default'`).run(enabled ? 1 : 0); },
-    createInitialAdmin: (name, password) => {
+    createInitialAdmin: ({ name, username, email, password, organizationType = 'process-subteams', timezone = 'UTC', shiftRotationEnabled = false, workwheelEnabled = false, operationalChecksEnabled = true }) => {
       const create = database.transaction(() => {
         const current = selectSetup.get() as { setupCompletedAt: string | null } | undefined;
         const adminCount = (selectAdminCount.get() as { count: number }).count;
         if (!current || current.setupCompletedAt !== null || adminCount !== 0) throw new Error('SETUP_ALREADY_COMPLETED');
-        const user = { id: randomUUID(), externalId: null, name: name.trim(), role: 'admin' as const };
+        const user = { id: randomUUID(), externalId: null, name: name.trim(), username: username.trim(), email: email.trim().toLowerCase(), role: 'admin' as const };
         upsertUser.run(user);
         insertCredential.run(user.id, hashPassword(password), new Date().toISOString());
-        database.prepare(`UPDATE installation_settings SET setup_completed_at = ?, setup_completed_by = ? WHERE id = 'default'`).run(new Date().toISOString(), user.id);
+        database.prepare(`UPDATE installation_settings SET setup_completed_at = ?, setup_completed_by = ?, organization_type = ?, timezone = ?, shift_rotation_enabled = ?, workwheel_enabled = ?, operational_checks_enabled = ? WHERE id = 'default'`).run(new Date().toISOString(), user.id, organizationType, timezone, shiftRotationEnabled ? 1 : 0, workwheelEnabled ? 1 : 0, operationalChecksEnabled ? 1 : 0);
         return { ...user, disabled: false, employeeId: null, createdAt: new Date().toISOString() };
       });
       return create();
@@ -355,8 +449,8 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
       const row = selectCredential.get(userId) as { passwordHash: string } | undefined;
       return row !== undefined && verifyPassword(password, row.passwordHash);
     },
-    createUser: ({ id = randomUUID(), name, role, password }) => {
-      const user = { id, externalId: null, name: name.trim(), role };
+    createUser: ({ id = randomUUID(), name, username, email, role, password }) => {
+      const user = { id, externalId: null, name: name.trim(), username: username.trim(), email: email.trim().toLowerCase(), role };
       const create = database.transaction(() => {
         upsertUser.run(user);
         insertCredential.run(user.id, hashPassword(password), new Date().toISOString());
@@ -369,9 +463,46 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
       if (!existing) throw new Error('USER_NOT_FOUND');
       const adminCount = (selectAdminCount.get() as { count: number }).count;
       if (changes.role && existing.role === 'admin' && changes.role !== 'admin' && adminCount <= 1) throw new Error('FINAL_ADMIN');
-      database.prepare(`UPDATE users SET name = COALESCE(?, name), role = COALESCE(?, role), disabled = COALESCE(?, disabled), updated_at = ? WHERE id = ?`).run(changes.name?.trim() ?? null, changes.role ?? null, changes.disabled === undefined ? null : (changes.disabled ? 1 : 0), new Date().toISOString(), userId);
+      database.prepare(`UPDATE users SET name = COALESCE(?, name), username = COALESCE(?, username), email = COALESCE(?, email), role = COALESCE(?, role), disabled = COALESCE(?, disabled), updated_at = ? WHERE id = ?`).run(changes.name?.trim() ?? null, changes.username?.trim() ?? null, changes.email?.trim().toLowerCase() ?? null, changes.role ?? null, changes.disabled === undefined ? null : (changes.disabled ? 1 : 0), new Date().toISOString(), userId);
       if (changes.password) updateCredential.run(hashPassword(changes.password), new Date().toISOString(), userId);
       return selectUser.get(userId) as AuthUserRecord;
+    },
+    getUserPreferences: (userId) => {
+      const row = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
+      let colleagueChangeUserIds: string[] = [];
+      try { colleagueChangeUserIds = row?.colleagueChangeUserIds ? JSON.parse(row.colleagueChangeUserIds).filter((id: unknown): id is string => typeof id === 'string') : []; } catch { colleagueChangeUserIds = []; }
+      return row ? { ...row, colleagueChangeNotificationsEnabled: Boolean(row.colleagueChangeNotificationsEnabled), colleagueChangeUserIds } as UserPreferencesRecord : { jumpToTodayOnGridChange: true, darkMode: false, zoom: 100, colleagueChangeNotificationsEnabled: false, colleagueChangeUserIds };
+    },
+    updateUserPreferences: (userId, changes) => {
+      const current = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
+      let currentUserIds: string[] = [];
+      try { currentUserIds = current?.colleagueChangeUserIds ? JSON.parse(current.colleagueChangeUserIds).filter((id: unknown): id is string => typeof id === 'string') : []; } catch { currentUserIds = []; }
+      const next = { jumpToTodayOnGridChange: changes.jumpToTodayOnGridChange ?? current?.jumpToTodayOnGridChange ?? true, darkMode: changes.darkMode ?? current?.darkMode ?? false, zoom: changes.zoom ?? current?.zoom ?? 100, colleagueChangeNotificationsEnabled: changes.colleagueChangeNotificationsEnabled ?? Boolean(current?.colleagueChangeNotificationsEnabled), colleagueChangeUserIds: changes.colleagueChangeUserIds ?? currentUserIds };
+      database.prepare(`INSERT INTO user_preferences (user_id, jump_to_today_on_grid_change, dark_mode, zoom, colleague_change_notifications_enabled, colleague_change_user_ids) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET jump_to_today_on_grid_change=excluded.jump_to_today_on_grid_change, dark_mode=excluded.dark_mode, zoom=excluded.zoom, colleague_change_notifications_enabled=excluded.colleague_change_notifications_enabled, colleague_change_user_ids=excluded.colleague_change_user_ids`).run(userId, next.jumpToTodayOnGridChange ? 1 : 0, next.darkMode ? 1 : 0, next.zoom, next.colleagueChangeNotificationsEnabled ? 1 : 0, JSON.stringify([...new Set(next.colleagueChangeUserIds)]));
+      return next;
+    },
+    factoryReset: () => {
+      database.transaction(() => {
+        database.exec(`
+          DELETE FROM admin_event_acknowledgements;
+          DELETE FROM operational_checks;
+          DELETE FROM absence_requests;
+          DELETE FROM admin_responsibility_scopes;
+          DELETE FROM responsibility_units;
+          DELETE FROM user_personnel_links;
+          DELETE FROM user_preferences;
+          DELETE FROM local_credentials;
+          DELETE FROM sessions;
+          DELETE FROM audit_logs;
+          DELETE FROM planner_change_events;
+          DELETE FROM planner_documents;
+          DELETE FROM shifts;
+          DELETE FROM activities;
+          DELETE FROM employees;
+          DELETE FROM users;
+          UPDATE installation_settings SET setup_completed_at = NULL, setup_completed_by = NULL, organization_type = 'team', timezone = 'UTC', shift_rotation_enabled = 0, workwheel_enabled = 0, operational_checks_enabled = 1 WHERE id = 'default';
+        `);
+      })();
     },
     deleteUser: (userId) => {
       const existing = selectUser.get(userId) as AuthUserRecord | undefined;
@@ -602,6 +733,55 @@ function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(`CREATE TABLE absence_requests (id TEXT PRIMARY KEY, requester_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, employee_id INTEGER NOT NULL, status_key TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL, duration_type TEXT NOT NULL CHECK (duration_type IN ('fullday','24hours','time')), time_range TEXT, request_status TEXT NOT NULL CHECK (request_status IN ('pending','approved','declined','withdrawn')), created_at TEXT NOT NULL, decided_at TEXT, decided_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL); CREATE INDEX absence_requests_queue_idx ON absence_requests (request_status, created_at DESC);`);
       database.prepare(`INSERT INTO schema_migrations (version) VALUES (11)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 12').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`
+        ALTER TABLE users ADD COLUMN username TEXT;
+        ALTER TABLE users ADD COLUMN email TEXT;
+        UPDATE users SET username = lower(replace(name, ' ', '.')) WHERE username IS NULL;
+        UPDATE users SET email = lower(username || '@local.invalid') WHERE email IS NULL;
+        CREATE UNIQUE INDEX users_username_unique_idx ON users (lower(username));
+        CREATE UNIQUE INDEX users_email_unique_idx ON users (lower(email));
+        CREATE TABLE user_preferences (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          jump_to_today_on_grid_change INTEGER NOT NULL DEFAULT 1 CHECK (jump_to_today_on_grid_change IN (0,1)),
+          dark_mode INTEGER NOT NULL DEFAULT 0 CHECK (dark_mode IN (0,1)),
+          zoom INTEGER NOT NULL DEFAULT 100 CHECK (zoom IN (80,90,100,110,125,150,175))
+        );
+      `);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (12)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 13').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`ALTER TABLE installation_settings ADD COLUMN organization_type TEXT NOT NULL DEFAULT 'team'; ALTER TABLE installation_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'; ALTER TABLE installation_settings ADD COLUMN shift_rotation_enabled INTEGER NOT NULL DEFAULT 0 CHECK (shift_rotation_enabled IN (0,1)); ALTER TABLE installation_settings ADD COLUMN workwheel_enabled INTEGER NOT NULL DEFAULT 0 CHECK (workwheel_enabled IN (0,1));`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (13)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 14').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`ALTER TABLE users ADD COLUMN last_login_at TEXT; ALTER TABLE users ADD COLUMN last_active_at TEXT;`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (14)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 15').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`CREATE TABLE workwheel_documents (id TEXT PRIMARY KEY CHECK (id = 'default'), revision INTEGER NOT NULL, document_json TEXT NOT NULL, updated_at TEXT NOT NULL);`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (15)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 16').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`ALTER TABLE user_preferences ADD COLUMN colleague_change_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (colleague_change_notifications_enabled IN (0,1)); ALTER TABLE user_preferences ADD COLUMN colleague_change_user_ids TEXT NOT NULL DEFAULT '[]';`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (16)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 17').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`ALTER TABLE installation_settings ADD COLUMN organization_name TEXT NOT NULL DEFAULT 'Organisation'; ALTER TABLE installation_settings ADD COLUMN organization_slug TEXT NOT NULL DEFAULT 'default'; ALTER TABLE installation_settings ADD COLUMN multisite_enabled INTEGER NOT NULL DEFAULT 0 CHECK (multisite_enabled IN (0,1));`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (17)`).run();
     })();
   }
 }

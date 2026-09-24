@@ -15,6 +15,7 @@ body.dark .atlas-auth-message,body.dark .atlas-auth-card small{color:var(--muted
 body.dark .atlas-auth-card input{background:var(--bg,#0f1724);color:var(--text,#f1f5f9)}
 body.dark .atlas-auth-brand{color:var(--text,#f1f5f9)}
 body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
+.atlas-wizard-kicker{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-blue);margin-top:18px}.atlas-wizard-step h2{margin:5px 0 6px;font-size:21px}.atlas-wizard-step p{color:var(--muted);line-height:1.5;margin-bottom:15px}.atlas-choice-grid{display:grid;gap:8px}.atlas-choice-grid label,.atlas-feature-card{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--muted-bg);cursor:pointer}.atlas-choice-grid label:hover,.atlas-feature-card:hover{border-color:var(--accent-blue)}.atlas-choice-grid span,.atlas-choice-grid small,.atlas-feature-card small{grid-column:2;color:var(--muted);font-size:12px}.atlas-choice-grid b,.atlas-feature-card b{font-size:13px}.atlas-wizard-actions{display:flex;justify-content:space-between;gap:8px;margin-top:18px}.atlas-wizard-actions button{width:auto;min-width:110px}.atlas-wizard-actions #atlas-wizard-next{background:var(--accent-blue);color:#fff}
 </style>
 </head>
 <body>
@@ -47,7 +48,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     </button>
     <button class="nav-btn hosted-personal-nav" id="my-upcoming-nav" data-page="my-upcoming" onclick="nav('my-upcoming')" aria-label="My upcoming" style="display:none">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/><path d="M19 3v4M21 5h-4"/></svg>
-      <span class="sidebar-item-label">My upcoming</span>
+      <span class="sidebar-item-label">My schedule</span>
     </button>
     <button class="nav-btn bug-report-nav" data-page="bug-report" onclick="nav('bug-report')" aria-label="Bug Report" style="display:none">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 8V5M15 8V5M8 12H5M19 12h-3M9 16v3M15 16v3"/><rect x="7" y="8" width="10" height="9" rx="3"/><path d="M7 10H5M19 10h-2"/></svg>
@@ -72,14 +73,14 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="sb-info" id="file-status" title="Hosted SQLite database"><span class="db-indicator connected" id="db-dot"></span><span id="db-status-text">Database connected</span></div>
   </div>
   <div class="sb-section sidebar-footer">
-    <div id="hosted-sidebar-user" class="hosted-user-card" style="display:none" aria-live="polite">
+    <button id="hosted-sidebar-user" class="hosted-user-card" type="button" style="display:none" aria-live="polite" onclick="openPersonalSettings()" aria-label="Open personal account settings">
       <div class="hosted-user-avatar" id="hosted-user-avatar" aria-hidden="true"></div>
       <div class="hosted-user-copy sidebar-item-label">
         <span class="hosted-user-greeting">Signed in as</span>
         <strong id="hosted-user-name"></strong>
         <span id="hosted-user-role"></span>
       </div>
-    </div>
+    </button>
     <button class="sb-link hosted-sign-out-danger" id="hosted-sign-out" type="button" onclick="signOutHostedUser()" aria-label="Sign out" style="display:none;margin-bottom:8px">
       <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg><span class="sidebar-item-label">Sign out</span>
     </button>
@@ -147,14 +148,14 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row"><label>Email *</label><input id="ef-email" type="email" placeholder="jane@company.com"></div>
     <div class="form-row-2">
       <div class="form-row" style="margin:0"><label>Role / title *</label><input id="ef-role" placeholder="Engineer"></div>
-      <div class="form-row" style="margin:0"><label>Organisation</label><input id="ef-organisation" list="ef-organisations" placeholder="CIS Battalion"></div>
+      <div class="form-row" style="margin:0"><label>Organisation</label><input id="ef-organisation" list="ef-organisations" placeholder="Organisation name"></div>
     </div>
     <div class="form-row-2">
-      <div class="form-row" style="margin:0"><label>Department <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-dept" list="ef-departments" placeholder="JTCC"></div>
-      <div class="form-row" style="margin:0"><label>Section <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-section" list="ef-sections" placeholder="JDLOC"></div>
+      <div class="form-row" style="margin:0"><label>Department <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-dept" list="ef-departments" placeholder="Department name"></div>
+      <div class="form-row" style="margin:0"><label>Section <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-section" list="ef-sections" placeholder="Section name"></div>
     </div>
     <div class="form-row-2">
-      <div class="form-row" style="margin:0"><label>Process <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-process" list="ef-processes" placeholder="Opsroom"></div>
+      <div class="form-row" style="margin:0"><label>Process <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-process" list="ef-processes" placeholder="Process name"></div>
       <div class="form-row" style="margin:0"><label>Team <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-team" list="ef-teams" placeholder="Alpha Team"></div>
     </div>
     <datalist id="ef-organisations"></datalist><datalist id="ef-departments"></datalist><datalist id="ef-sections"></datalist><datalist id="ef-processes"></datalist><datalist id="ef-teams"></datalist>
@@ -356,7 +357,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
 <!-- Activity types and work codes modal -->
 <div class="modal-bg" id="status-modal">
   <div class="modal" style="width:620px;max-height:85vh;overflow:auto">
-    <h3>Activity Categories</h3>
+    <div class="settings-modal-heading"><button class="btn btn-sm" type="button" data-settings-back onclick="goBackSettings()">← Back</button><h3>Activity Categories</h3></div>
     <p class="modal-desc">Describes what an activity is and provides its category color. Categories do not affect hours, absence, or availability.</p>
     <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px">
       <div style="font-size:13px;font-weight:500;margin-bottom:8px" id="sf-form-title">Add an activity category</div>
@@ -393,7 +394,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     </div>
     <div id="daily-status-list" style="max-height:280px;overflow:auto;display:flex;flex-direction:column;gap:6px"></div>
     <div style="height:1px;background:var(--border);margin:18px 0"></div>
-    <h3 style="font-size:16px">Work Time Codes (FIF Codes for Activity)</h3>
+    <h3 style="font-size:16px">Work Time Codes</h3>
     <p class="modal-desc">Describes the planned work performed during an activity. The code defines whether the employee is out of office; Shift Type alone determines scheduled hours.</p>
     <div id="work-code-form" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px">
       <input id="wcf-id" type="hidden">
@@ -459,7 +460,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row hosted-admin-only"><label>Hosted account</label><button class="btn" type="button" onclick="openAccountManagement()">Manage user accounts</button><div class="form-hint" id="hosted-user-info"></div></div>
     <div class="form-row">
       <label>Organisation name</label>
-      <input id="set-app-name" placeholder="e.g. JDLOC">
+      <input id="set-app-name" placeholder="e.g. Operations Team">
       <div class="form-hint">Shown as the main planning header. ATLAS remains the application name in the corner.</div>
     </div>
     <div class="form-row"><label>Schedule</label><button class="btn" type="button" onclick="openScheduleSettings()">Open Schedule settings</button><div class="form-hint">Core workday, grid behavior, special days, planning options, and activity deadline.</div></div>
@@ -474,17 +475,17 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row">
       <label>Workwheel</label>
       <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input id="set-workwheel-enabled" type="checkbox"> Enable Workwheel</label>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-top:8px"><div><label class="muted text-sm">Upcoming window (days)</label><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"></div><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;margin-top:8px"><div><label class="muted text-sm">Workwheel upcoming window (days)</label><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"></div><div><label class="muted text-sm">My schedule lookahead (days)</label><input id="set-my-schedule-lookahead-days" type="number" min="1" max="365" step="1" value="31"><span class="form-hint">Default: one month.</span></div><div><label class="muted text-sm">Schedule display</label><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option></select><span class="form-hint">Controls how Workwheel events appear in Schedule.</span></div><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div>
       <div class="form-hint">Experimental section activity wheels. Data is kept in a separate local JSON file.</div>
     </div>
     <div class="form-row">
       <label>Security classification</label>
       <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input id="set-security-label-enabled" type="checkbox"> Show security label</label>
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-top:8px">
-        <div><label class="muted text-sm">Label text</label><input id="set-security-label-text" type="text" maxlength="32" placeholder="BEGRENSET"></div>
+        <div><label class="muted text-sm">Label text</label><input id="set-security-label-text" type="text" maxlength="32" placeholder="CONFIDENTIAL"></div>
         <div><label class="muted text-sm">Color</label><input id="set-security-label-color" type="color" style="width:48px;height:34px;padding:2px"></div>
       </div>
-      <div class="form-hint">Displays a classification banner (e.g. BEGRENSET) on the Schedule view, Activity Schedule report, Status Board, and on every printed page. Visual only — does not restrict access.</div>
+      <div class="form-hint">Displays a classification banner (e.g. CONFIDENTIAL) on the Schedule view, Activity Schedule report, Status Board, and on every printed page. Visual only — does not restrict access.</div>
     </div>
     <div class="form-row"><label>Data & Backup</label><button class="btn" type="button" onclick="openDataBackupSettings()">Open Data & Backup</button><div class="form-hint">Choose planner JSON, Save As, recovery status, and test data.</div></div>
     <div class="form-row" style="margin-top:2px">
@@ -498,23 +499,41 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
   </div>
 </div>
 
+<div class="modal-bg" id="personal-settings-modal">
+  <div class="modal" style="width:520px">
+    <div class="flex items-center justify-between" style="gap:12px"><h3 style="margin:0">My account</h3><button class="icon-btn" title="Close" onclick="closeModal('personal-settings-modal')">&times;</button></div>
+    <p class="modal-desc">Update your personal details and display preferences. Account administration remains separate.</p>
+    <form id="personal-settings-form" class="form-row">
+      <label>Display name<input id="personal-name" required maxlength="120"></label>
+      <label>Username<input id="personal-username" readonly></label>
+      <label>Email<input id="personal-email" type="email" required maxlength="240"></label>
+      <label>New password<input id="personal-password" type="password" minlength="12" autocomplete="new-password"><span class="form-hint">Leave blank to keep your current password. New passwords require at least 12 characters.</span></label>
+      <div class="form-row"><label>Preferences</label><label style="display:flex;align-items:center;gap:7px;font-size:12px"><input id="personal-jump-today" type="checkbox"> Jump to today after changing schedule settings</label><label style="display:flex;align-items:center;gap:7px;font-size:12px"><input id="personal-dark-mode" type="checkbox"> Use dark mode</label><label style="display:flex;align-items:center;gap:7px;font-size:12px"><span>Zoom</span><select id="personal-zoom"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option><option value="110">110%</option><option value="125">125%</option><option value="150">150%</option><option value="175">175%</option></select></label><label style="display:flex;align-items:center;gap:7px;font-size:12px"><input id="personal-colleague-notifications" type="checkbox"> Notify me when selected users change the planner</label><div class="form-hint">Hosted users are not notified unless this is enabled.</div><div id="personal-colleague-users" class="participant-list"></div></div>
+      <div id="personal-settings-error" role="alert" class="form-hint" style="color:var(--destructive);min-height:1.3em"></div>
+      <div class="modal-actions"><button class="btn" type="button" onclick="closeModal('personal-settings-modal')">Cancel</button><button class="btn btn-primary" type="submit">Save account</button></div>
+    </form>
+  </div>
+</div>
+
 <div class="modal-bg" id="account-management-modal">
   <div class="modal" style="width:680px;max-height:calc(100vh - 32px);overflow:auto">
-    <div class="flex items-center justify-between" style="gap:12px"><h3 style="margin:0">User accounts</h3><button class="icon-btn" title="Close" onclick="closeModal('account-management-modal')">&times;</button></div>
+    <div class="settings-modal-heading"><button class="btn btn-sm" type="button" data-settings-back onclick="goBackSettings()">← Back</button><h3>User accounts</h3><button class="icon-btn" title="Close" onclick="closeModal('account-management-modal')">&times;</button></div>
     <p class="modal-desc">Administrators can add, edit, disable, and delete hosted accounts.</p>
     <form id="account-form" class="form-row" style="border:1px solid var(--border);padding:12px;border-radius:8px">
-      <input id="account-id" type="hidden"><label>Name<input id="account-name" required maxlength="120"></label><label>Role<select id="account-role"><option value="admin">Admin</option><option value="planner">User</option><option value="viewer">Reader</option></select></label><label>Password<input id="account-password" type="password" minlength="12"><span class="form-hint">Required for new users; leave blank when editing to keep the current password.</span></label><label>Linked personnel<select id="account-employee"><option value="">No personnel link (login-only account)</option></select><span class="form-hint">Personnel records can exist without login accounts.</span></label><label id="responsibility-scope-row" style="display:none">Review responsibility unit<select id="account-scope"><option value="">No scope (global review)</option></select><span class="form-hint">A scope limits the change-review queue to this unit and its descendants.</span></label><div class="modal-actions"><button class="btn" type="button" onclick="resetAccountForm()">Clear</button><button class="btn btn-primary" type="submit">Save user</button></div>
+      <input id="account-id" type="hidden"><label>Name<input id="account-name" required maxlength="120"></label><label>Username<input id="account-username" required maxlength="80" autocomplete="username"></label><label>Email<input id="account-email" type="email" required maxlength="240" autocomplete="email"></label><label>Role<select id="account-role"><option value="admin">Admin</option><option value="planner">User</option><option value="viewer">Read-only</option></select></label><label>Password<input id="account-password" type="password" minlength="12"><span class="form-hint">Required for new users; leave blank when editing to keep the current password.</span></label><label>Linked personnel<select id="account-employee"><option value="">No personnel link (login-only account)</option></select><span class="form-hint">Personnel records can exist without login accounts.</span></label><label id="responsibility-scope-row" style="display:none">Review responsibility unit<select id="account-scope"><option value="">No scope (global review)</option></select><span class="form-hint">A scope limits the change-review queue to this unit and its descendants.</span></label><div class="modal-actions"><button class="btn" type="button" onclick="resetAccountForm()">Clear</button><button class="btn btn-primary" type="submit">Save user</button></div>
     </form>
-    <div id="account-list" style="display:grid;gap:8px;margin-top:14px"></div>
+    <div class="account-toolbar"><input id="account-search" type="search" placeholder="Search name, username, or email…"><select id="account-filter-role"><option value="all">All roles</option><option value="admin">Admins</option><option value="planner">Users</option><option value="viewer">Read-only</option></select><select id="account-filter-status"><option value="all">All statuses</option><option value="active">Enabled</option><option value="disabled">Disabled</option></select><select id="account-sort"><option value="name">Sort by name</option><option value="role">Sort by role</option><option value="created">Sort by created</option></select></div>
+    <div id="account-summary" class="account-summary"></div>
+    <div class="account-results-shell"><nav id="account-index" class="account-index" aria-label="Jump to user surname"></nav><div id="account-list" class="account-list-scroll"></div></div>
   </div>
 </div>
 
 <div class="modal-bg" id="workwheel-file-modal">
   <div class="modal" style="width:520px">
-    <h3>Workwheel data file</h3>
+    <div class="settings-modal-heading"><button class="btn btn-sm" type="button" data-settings-back onclick="goBackSettings()">← Back</button><h3>Workwheel data file</h3></div>
     <p class="modal-desc">Open or export the separate Workwheel JSON file. Browser recovery is used while testing.</p>
     <div class="form-hint" id="workwheel-file-status" style="margin-bottom:12px"></div>
-    <div class="flex gap-2" style="flex-wrap:wrap"><button class="btn" type="button" onclick="importWorkwheelFile()">Open JSON</button><button class="btn" type="button" onclick="saveWorkwheelFileAs()">Export JSON</button><button class="btn" type="button" onclick="loadWorkwheelExample()">Load example</button></div>
+    <div class="flex gap-2" style="flex-wrap:wrap"><button class="btn" type="button" onclick="importWorkwheelFile()">Open JSON</button><button class="btn" type="button" onclick="saveWorkwheelFileAs()">Export JSON</button></div>
     <input id="workwheel-json-file" type="file" accept="application/json,.json" onchange="handleWorkwheelFile(event)" style="display:none">
     <div class="modal-actions"><button class="btn" onclick="closeModal('workwheel-file-modal')">Done</button></div>
   </div>
@@ -523,9 +542,9 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
 <div class="modal-bg" id="workwheel-create-modal">
   <div class="modal" style="width:420px">
     <h3>Create Workwheel</h3>
-    <p class="modal-desc">Create a wheel for a section, for example JDLOC.</p>
-    <div class="form-row"><label for="workwheel-name-input">Wheel name *</label><input id="workwheel-name-input" placeholder="JDLOC" onkeydown="if(event.key==='Enter') saveNewWorkwheel()"></div>
-    <div class="form-row"><label for="workwheel-section-input">Section</label><input id="workwheel-section-input" placeholder="JDLOC"></div>
+    <p class="modal-desc">Create a wheel for a team, process, or other organisational unit.</p>
+    <div class="form-row"><label for="workwheel-name-input">Wheel name *</label><input id="workwheel-name-input" placeholder="Operations planning" onkeydown="if(event.key==='Enter') saveNewWorkwheel()"></div>
+    <div class="form-row"><label for="workwheel-section-input">Team or organisation unit</label><input id="workwheel-section-input" placeholder="Operations Team"></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal('workwheel-create-modal')">Cancel</button><button class="btn btn-primary" onclick="saveNewWorkwheel()">Create wheel</button></div>
   </div>
 </div>
@@ -534,13 +553,18 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
   <div class="modal" style="width:480px">
     <h3>Add Workwheel activity</h3>
     <p class="modal-desc">Add a meeting, deadline, or recurring section activity.</p>
-    <div class="form-row"><label>Title *</label><input id="ww-activity-title" placeholder="Weekly JDLOC meeting"></div>
-    <div class="form-row-2"><div class="form-row" style="margin:0"><label>Date *</label><input id="ww-activity-date" type="date"></div><div class="form-row" style="margin:0"><label>Time</label><input id="ww-activity-time" placeholder="1000-1100"></div></div>
+    <div class="form-row"><label>Title *</label><input id="ww-activity-title" placeholder="Weekly planning meeting"></div>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label>Start date *</label><input id="ww-activity-date" type="date"></div><div class="form-row" style="margin:0"><label>End date</label><input id="ww-activity-end-date" type="date"><span class="form-hint">Leave blank for a one-day activity.</span></div></div>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label>Start time</label><input id="ww-activity-start-time" type="time"></div><div class="form-row" style="margin:0"><label>End time</label><input id="ww-activity-end-time" type="time"></div></div><div class="form-hint" style="margin-bottom:13px">Leave both times blank for an all-day activity. For a timed activity, both start and end are required.</div>
+    <div class="form-row"><label>Location</label><input id="ww-activity-location" placeholder="Meeting room, address, or online"></div>
     <div class="form-row-2"><div class="form-row" style="margin:0"><label>Type</label><select id="ww-activity-type" class="plain-select"><option value="meeting">Meeting</option><option value="deadline">Deadline</option><option value="briefing">Briefing</option><option value="other">Other</option></select></div><div class="form-row" style="margin:0"><label>Recurrence</label><select id="ww-activity-recurrence" class="plain-select" onchange="toggleWorkwheelWeekday()"><option value="none">None</option><option value="weekly">Weekly</option><option value="fortnightly">Every 14 days</option><option value="monthly">Monthly</option></select></div></div>
-    <div class="form-row-2"><div class="form-row" id="ww-weekday-row" style="margin:0;display:none"><label>Weekday</label><select id="ww-activity-weekday" class="plain-select"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div><div class="form-row" style="margin:0"><label>Meeting color</label><input id="ww-activity-color" type="color" value="#3b82f6" style="width:52px;height:36px;padding:2px"></div></div>
-    <div class="form-row"><label>Responsible person</label><input id="ww-activity-responsible" placeholder="Name or call sign"></div>
+    <div class="form-row-2"><div class="form-row" id="ww-weekday-row" style="margin:0;display:none"><label>Weekday</label><select id="ww-activity-weekday" class="plain-select"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div><div class="form-row" style="margin:0"><label>Event color</label><div class="swatches" id="ww-activity-swatches"></div><input id="ww-activity-color" type="hidden" value="#2563eb"></div></div>
+    <div class="form-row"><label>Responsible person</label><div class="responsible-mode-switch"><label><input type="radio" name="ww-responsible-mode" value="internal" checked onchange="toggleWorkwheelResponsibleMode()"> Internal personnel</label><label><input type="radio" name="ww-responsible-mode" value="external" onchange="toggleWorkwheelResponsibleMode()"> External contact</label></div></div>
+    <div id="ww-responsible-internal" class="form-row"><label>Personnel</label><select id="ww-activity-responsible-id" class="plain-select"><option value="">Unassigned</option></select></div>
+    <div id="ww-responsible-external" style="display:none"><div class="form-row"><label>External name *</label><input id="ww-activity-responsible" placeholder="Contact name"></div><div class="form-row-2"><div class="form-row" style="margin:0"><label>Organization</label><input id="ww-responsible-organization" placeholder="Organization or company"></div><div class="form-row" style="margin:0"><label>Email</label><input id="ww-responsible-email" type="email" placeholder="name@example.com"></div></div><div class="form-row"><label>Phone</label><input id="ww-responsible-phone" type="tel" placeholder="Optional phone number"></div></div>
+    <div class="form-row"><label>Participants</label><div class="form-hint" style="margin-bottom:6px">Select personnel who should see this meeting in My schedule.</div><div class="workwheel-participant-toolbar"><input id="ww-participant-search" placeholder="Search personnel…" oninput="filterWorkwheelParticipants(this.value)"><button class="btn btn-sm" type="button" onclick="setAllWorkwheelParticipants(true)">All</button><button class="btn btn-sm" type="button" onclick="setAllWorkwheelParticipants(false)">None</button></div><div id="ww-activity-participants" class="workwheel-participant-list"></div><div id="ww-conflict-warning" class="workwheel-conflict-warning" role="status"></div></div>
     <div class="form-row"><label>Notes</label><textarea id="ww-activity-notes" placeholder="Optional notes"></textarea></div>
-    <div class="modal-actions"><button class="btn btn-danger" id="ww-activity-delete" style="margin-right:auto;display:none" onclick="confirmDeleteWorkwheelActivity()">Delete</button><button class="btn" onclick="closeModal('workwheel-activity-modal')">Cancel</button><button class="btn btn-primary" onclick="saveWorkwheelActivity()">Save activity</button></div>
+    <div class="modal-actions"><button class="btn btn-danger" id="ww-activity-delete" style="margin-right:auto;display:none" onclick="confirmDeleteWorkwheelActivity()">Delete</button><button class="btn" onclick="closeModal('workwheel-activity-modal')">Cancel</button><button class="btn" id="ww-publish-schedule" type="button" onclick="publishCurrentWorkwheelActivity()">Publish to Schedule</button><button class="btn btn-primary" onclick="saveWorkwheelActivity()">Save activity</button></div>
   </div>
 </div>
 
@@ -565,7 +589,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
 
 <div class="modal-bg" id="data-backup-settings-modal">
   <div class="modal" style="width:520px">
-    <div class="flex items-center justify-between" style="gap:12px"><h3 style="margin:0">Data & Backup</h3><button class="icon-btn" title="Close" onclick="closeModal('data-backup-settings-modal')">&times;</button></div>
+    <div class="settings-modal-heading"><button class="btn btn-sm" type="button" data-settings-back onclick="goBackSettings()">← Back</button><h3>Data & Backup</h3><button class="icon-btn" title="Close" onclick="closeModal('data-backup-settings-modal')">&times;</button></div>
     <p class="modal-desc">Manage the active planner JSON file and local recovery options.</p>
     <div class="form-hint" id="default-json-status" style="margin-bottom:10px"></div>
     <div class="flex gap-2" style="flex-wrap:wrap"><button class="btn" type="button" onclick="importData()">Choose Data File</button><button class="btn" id="save-local-as-btn" type="button" onclick="saveDataAs()">Save As...</button><button class="btn" type="button" onclick="loadExampleTestData()">Load example data</button></div>
@@ -612,8 +636,9 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <p class="modal-desc">Protected local controls for Boss View, work schedule checks, data maintenance, and audit information.</p>
     <div class="form-row"><label>Operational checks</label><label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input id="set-operational-checks-enabled" type="checkbox"> Enable Schedule check-off system</label><div class="form-hint">Admins can check off schedule cells. Checks are recorded with the administrator and timestamp; responsibility scope controls which personnel can be checked.</div></div>
     <div class="form-row"><label>Audit information</label><div id="admin-audit-info" class="form-hint"></div></div>
+    <div class="form-row"><label>Database statistics</label><div id="admin-statistics" class="admin-statistics"><div class="form-hint">Statistics are available to global administrators.</div></div></div>
     <div class="form-row"><label>Bug Report</label><label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input id="set-bug-report-enabled" type="checkbox"> Show Bug Report in the sidebar</label><div class="form-hint">Allows users to write a readable offline report for feedback. No planner data or passwords are exported.</div></div>
-    <div class="form-row"><label>Data maintenance</label><div class="form-hint">Planner validation and orphan-reference cleanup are handled automatically during loading and saving.</div></div>
+    <div class="form-row"><label>Data maintenance</label><div class="form-hint">Planner validation and orphan-reference cleanup are handled automatically during loading and saving.</div><button class="btn btn-danger" type="button" onclick="factoryResetHostedApp()" style="margin-top:10px">Factory reset ATLAS</button><div class="form-hint">Permanently deletes all accounts, planner data, settings, sessions, and audit history, then returns to first-run setup.</div></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal('administration-settings-modal')">Cancel</button><button class="btn btn-primary" onclick="saveAdministrationSettings()">Save administration settings</button></div>
   </div>
 </div>
@@ -691,7 +716,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     </div>
   </div>
 </div>
-<script src="app/workwheel.js?v=7"></script>
+<script src="app/workwheel.js?v=8"></script>
 <script src="app/app.js?v=32"></script>
 </body>
 </html>

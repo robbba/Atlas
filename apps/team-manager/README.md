@@ -2,7 +2,7 @@
 
 ## Workwheel prototype
 
-The optional Workwheel can be enabled from **Application settings**. It is designed for section planning such as JDLOC and stores its experimental data separately from the main planner JSON. Create multiple section wheels, add recurring meetings or deadlines, and use the upcoming panel to review future items.
+The optional Workwheel can be enabled from **Application settings**. It supports planning for teams, processes, sections, and other organisational units, and stores its experimental data separately from the main planner JSON. Create multiple wheels, add recurring meetings or deadlines, and use the upcoming panel to review future items.
 
 Workwheel data is recovered in browser storage while testing. Use **Workwheel → Data file** to load a separate JSON file or export the current Workwheel as `workwheel.json`. The feature is fully offline and does not use external services or assets. The current prototype supports none, daily, weekly, and monthly recurrence; weekly activities use the weekday of their start date.
 

@@ -40,12 +40,25 @@ export function buildApp(options: AppOptions): FastifyInstance {
   app.get('/api/healthz', async () => ({ status: 'ok' as const }));
 
   app.get('/api/auth/bootstrap-status', async () => ({ setupRequired: options.database.isSetupRequired() }));
-  app.post<{ Body: { name?: string; password?: string } }>('/api/setup/create-admin', async (request, reply) => {
+  app.post<{ Body: { name?: string; username?: string; email?: string; password?: string; organizationName?: string; organizationSlug?: string; multisiteEnabled?: boolean; organizationType?: 'process-subteams' | 'section-process-team' | 'department-section-process-team' | 'organisation-department-section-process-team'; timezone?: string; shiftRotationEnabled?: boolean; workwheelEnabled?: boolean; operationalChecksEnabled?: boolean } }>('/api/setup/create-admin', async (request, reply) => {
     const name = request.body?.name?.trim();
+    const username = request.body?.username?.trim();
+    const email = request.body?.email?.trim().toLowerCase();
     const password = request.body?.password;
-    if (!name || !password || name.length > 120 || password.length < 12) return reply.code(400).send({ error: 'A name and password of at least 12 characters are required' });
+    const organizationSlug = String(request.body?.organizationSlug || 'default').trim().toLowerCase();
+    const organizationName = String(request.body?.organizationName || 'Organisation').trim();
+    const multisiteEnabled = request.body?.multisiteEnabled === true;
+    if (!/^[a-z0-9-]{2,64}$/.test(organizationSlug) || !organizationName || organizationName.length > 120) return reply.code(400).send({ error: 'A valid organization name and slug are required' });
+    if (!name || !username || !email || !password || name.length > 120 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || password.length < 12) return reply.code(400).send({ error: 'Name, username, valid email, and a password of at least 12 characters are required' });
     try {
-      const user = options.database.createInitialAdmin(name, password);
+      const setupOptions: { name: string; username: string; email: string; password: string; organizationType?: 'process-subteams' | 'section-process-team' | 'department-section-process-team' | 'organisation-department-section-process-team'; timezone?: string; shiftRotationEnabled?: boolean; workwheelEnabled?: boolean; operationalChecksEnabled?: boolean } = { name, username, email, password };
+      if (request.body?.organizationType !== undefined) setupOptions.organizationType = request.body.organizationType;
+      if (request.body?.timezone !== undefined) setupOptions.timezone = request.body.timezone;
+      if (request.body?.shiftRotationEnabled !== undefined) setupOptions.shiftRotationEnabled = request.body.shiftRotationEnabled;
+      if (request.body?.workwheelEnabled !== undefined) setupOptions.workwheelEnabled = request.body.workwheelEnabled;
+      if (request.body?.operationalChecksEnabled !== undefined) setupOptions.operationalChecksEnabled = request.body.operationalChecksEnabled;
+      const user = options.database.createInitialAdmin(setupOptions);
+      options.database.setInstallationOrganization({ name: organizationName, slug: organizationSlug, multisiteEnabled });
       options.database.writeAuditLog({ userId: user.id, action: 'setup.completed', target: `users/${user.id}` });
       const token = randomBytes(32).toString('base64url');
       const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
@@ -57,11 +70,15 @@ export function buildApp(options: AppOptions): FastifyInstance {
       return reply.code(400).send({ error: 'Could not create administrator' });
     }
   });
-  app.post<{ Body: { name?: string; password?: string } }>('/api/auth/login', async (request, reply) => {
-    const name = request.body?.name?.trim();
+  app.post<{ Body: { name?: string; username?: string; password?: string; organizationSlug?: string } }>('/api/auth/login', async (request, reply) => {
+    const username = (request.body?.username ?? request.body?.name)?.trim();
     const password = request.body?.password ?? '';
-    const user = name ? options.database.listUsers().find(candidate => candidate.name.toLowerCase() === name.toLowerCase()) : undefined;
+    const installation = options.database.getInstallationSettings();
+    const requestedSlug = String(request.body?.organizationSlug || '').trim().toLowerCase();
+    if (installation.multisiteEnabled && requestedSlug !== installation.organizationSlug) return reply.code(401).send({ error: 'Unknown organization code' });
+    const user = username ? options.database.listUsers().find(candidate => candidate.username?.toLowerCase() === username.toLowerCase()) : undefined;
     if (!user || user.disabled || !options.database.verifyUserPassword(user.id, password)) return reply.code(401).send({ error: 'Invalid credentials' });
+    options.database.touchUserActivity(user.id, true);
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString();
     options.database.createAuthSession(user.id, token, expiresAt);
@@ -71,11 +88,93 @@ export function buildApp(options: AppOptions): FastifyInstance {
   });
   app.get('/api/auth/me', async (request, reply) => {
     const session = requireRole(request, reply, ['admin', 'planner', 'viewer']);
-    return session ? { user: { id: session.userId, name: session.name, role: session.role, employeeId: options.database.getUserPersonnelLink(session.userId) }, operationalChecksEnabled: options.database.getOperationalChecksEnabled(), expiresAt: session.expiresAt } : undefined;
+    return session ? { user: { ...publicUser(options.database.getUserById(session.userId)!), preferences: options.database.getUserPreferences(session.userId), availableUsers: options.database.listUsers().filter(user => user.id !== session.userId).map(publicUser) }, installation: options.database.getInstallationSettings(), operationalChecksEnabled: options.database.getOperationalChecksEnabled(), expiresAt: session.expiresAt } : undefined;
+  });
+  app.patch<{ Body: { name?: string; email?: string; password?: string; preferences?: { jumpToTodayOnGridChange?: boolean; darkMode?: boolean; zoom?: number; colleagueChangeNotificationsEnabled?: boolean; colleagueChangeUserIds?: string[] } } }>('/api/me/profile', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin', 'planner', 'viewer']);
+    if (!actor) return;
+    const body = request.body ?? {};
+    if (body.name !== undefined && !body.name.trim()) return reply.code(400).send({ error: 'Name cannot be empty' });
+    if (body.email !== undefined && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email.trim())) return reply.code(400).send({ error: 'A valid email is required' });
+    if (body.password !== undefined && body.password.length < 12) return reply.code(400).send({ error: 'Password must be at least 12 characters' });
+    try {
+      const profileChanges: { name?: string; email?: string; password?: string } = {};
+      if (body.name !== undefined) profileChanges.name = body.name;
+      if (body.email !== undefined) profileChanges.email = body.email;
+      if (body.password !== undefined) profileChanges.password = body.password;
+      const user = options.database.updateUser(actor.userId, profileChanges);
+      const preferences = body.preferences ? options.database.updateUserPreferences(actor.userId, body.preferences) : options.database.getUserPreferences(actor.userId);
+      if (body.password) options.database.revokeAllAuthSessions(actor.userId, new Date().toISOString());
+      options.database.writeAuditLog({ userId: actor.userId, action: 'user.profile_updated', target: `users/${user.id}` });
+      return { user: publicUser(user), preferences };
+    } catch { return reply.code(400).send({ error: 'Could not update profile' }); }
   });
   app.get('/api/admin/settings', async (request, reply) => {
     if (!requireRole(request, reply, ['admin'])) return;
     return { operationalChecksEnabled: options.database.getOperationalChecksEnabled() };
+  });
+  app.get('/api/admin/statistics', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin']);
+    if (!actor) return;
+    return options.database.getDatabaseStatistics();
+  });
+  app.get('/api/workwheel', async (request, reply) => {
+    if (!requireRole(request, reply, ['admin', 'planner', 'viewer'])) return;
+    return options.database.getWorkwheel();
+  });
+  app.put<{ Body: { document?: Readonly<Record<string, unknown>>; expectedRevision?: number } }>('/api/workwheel', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin', 'planner']);
+    if (!actor) return;
+    if (!request.body?.document || typeof request.body.expectedRevision !== 'number') return reply.code(400).send({ error: 'document and expectedRevision are required' });
+    try {
+      const saved = options.database.saveWorkwheel(request.body.document, request.body.expectedRevision);
+      options.database.writeAuditLog({ userId: actor.userId, action: 'workwheel.updated', target: 'workwheel/default' });
+      return saved;
+    } catch (error) {
+      if (error instanceof Error && error.message === 'WORKWHEEL_REVISION_CONFLICT') return reply.code(409).send({ error: 'Workwheel changed by another user. Reload before saving.' });
+      return reply.code(400).send({ error: 'Could not save Workwheel' });
+    }
+  });
+  app.post<{ Body: { workwheelActivityId?: string; participantIds?: number[]; occurrenceDate?: string; startTime?: string; endTime?: string } }>('/api/workwheel/conflicts', async (request, reply) => {
+    if (!requireRole(request, reply, ['admin', 'planner', 'viewer'])) return;
+    const workwheel = options.database.getWorkwheel().document as { activities?: Array<Record<string, unknown>> };
+    const activityId = String(request.body?.workwheelActivityId || '');
+    const source = (workwheel.activities ?? []).find(item => String(item.id) === activityId);
+    if (!source) return reply.code(404).send({ error: 'Workwheel activity not found' });
+    const participants = new Set((request.body?.participantIds || (Array.isArray(source.participantIds) ? source.participantIds : [])).map(Number).filter(Number.isFinite));
+    const occurrenceDate = String(request.body?.occurrenceDate || source.date || '');
+    const startTime = String(request.body?.startTime || source.startTime || '').trim();
+    const endTime = String(request.body?.endTime || source.endTime || '').trim();
+    const timedOverlap = (otherStart: string, otherEnd: string) => {
+      if (!startTime || !endTime || !otherStart || !otherEnd) return true;
+      return startTime < otherEnd && otherStart < endTime;
+    };
+    const conflicts: Array<Record<string, unknown>> = [];
+    const planner = options.database.getPlanner().document as unknown as { activities?: Array<Record<string, unknown>> };
+    for (const other of planner.activities ?? []) {
+      if (Number(other.id) === Number(source.linkedScheduleActivityId)) continue;
+      const otherParticipants = Array.isArray(other.participants) ? other.participants.map(item => Number((item as Record<string, unknown>).id)).filter(Number.isFinite) : [];
+      if (!otherParticipants.some(id => participants.has(id))) continue;
+      const start = String(other.startDate || ''), end = String(other.endDate || start);
+      if (occurrenceDate < start || occurrenceDate > end) continue;
+      conflicts.push({ source: 'schedule', activityId: other.id, title: other.name || 'Schedule activity', date: occurrenceDate, time: 'All day', participantIds: otherParticipants.filter(id => participants.has(id)) });
+    }
+    for (const other of workwheel.activities ?? []) {
+      if (String(other.id) === activityId) continue;
+      const otherDate = String(other.date || '');
+      if (otherDate !== occurrenceDate) continue;
+      const otherParticipants = Array.isArray(other.participantIds) ? other.participantIds.map(Number).filter(Number.isFinite) : [];
+      if (!otherParticipants.some(id => participants.has(id)) || !timedOverlap(String(other.startTime || ''), String(other.endTime || ''))) continue;
+      conflicts.push({ source: 'workwheel', activityId: other.id, title: other.title || 'Workwheel activity', date: occurrenceDate, time: other.startTime && other.endTime ? `${other.startTime}–${other.endTime}` : 'All day', participantIds: otherParticipants.filter(id => participants.has(id)) });
+    }
+    return { conflicts };
+  });
+  app.post<{ Body: { confirmation?: string } }>('/api/admin/factory-reset', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin']);
+    if (!actor) return;
+    if (request.body?.confirmation !== 'RESET ATLAS') return reply.code(400).send({ error: 'Type RESET ATLAS to confirm the factory reset' });
+    options.database.factoryReset();
+    return reply.code(204).send();
   });
   app.patch<{ Body: { operationalChecksEnabled?: boolean } }>('/api/admin/settings', async (request, reply) => {
     const actor = requireRole(request, reply, ['admin']);
@@ -130,13 +229,13 @@ export function buildApp(options: AppOptions): FastifyInstance {
     options.database.writeAuditLog({ userId: actor.userId, action: 'admin.responsibility_scope_removed', target: `users/${request.params.userId}/scopes/${request.params.scopeId}` });
     return { ok: true };
   });
-  app.post<{ Body: { name?: string; password?: string; role?: 'admin' | 'planner' | 'viewer' } }>('/api/admin/users', async (request, reply) => {
+  app.post<{ Body: { name?: string; username?: string; email?: string; password?: string; role?: 'admin' | 'planner' | 'viewer' } }>('/api/admin/users', async (request, reply) => {
     const actor = requireRole(request, reply, ['admin']);
     if (!actor) return;
-    const { name, password, role } = request.body ?? {};
-    if (!name?.trim() || !password || password.length < 12 || !role) return reply.code(400).send({ error: 'name, password, and role are required' });
+    const { name, username, email, password, role } = request.body ?? {};
+    if (!name?.trim() || !username?.trim() || !email?.trim() || !password || password.length < 12 || !role || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) return reply.code(400).send({ error: 'name, username, email, role, and a password of at least 12 characters are required' });
     try {
-      const user = options.database.createUser({ name, password, role });
+      const user = options.database.createUser({ name, username, email, password, role });
       options.database.writeAuditLog({ userId: actor.userId, action: 'user.created', target: `users/${user.id}` });
       return reply.code(201).send({ user: publicUser(user) });
     } catch { return reply.code(400).send({ error: 'Could not create user' }); }
@@ -163,11 +262,19 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const employee = planner.employees.find(candidate => candidate.id === employeeId);
     if (!employee) return { linked: false };
     const requestedDays = Number((request.query as { days?: string }).days ?? 14);
-    const days = Number.isInteger(requestedDays) ? Math.max(1, Math.min(31, requestedDays)) : 14;
+    const days = Number.isInteger(requestedDays) ? Math.max(1, Math.min(365, requestedDays)) : 31;
     const start = new Date(); start.setHours(0, 0, 0, 0);
     const dates = Array.from({ length: days }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return localDate(date); });
     const statuses = new Map((planner.statuses ?? []).map(status => [status.key, status]));
     const activityShifts = (planner.activityShiftsMap ?? {}) as Record<string, Record<string, unknown>>;
+    const workwheel = options.database.getWorkwheel().document as { wheels?: Array<{ id?: string; name?: string }>; activities?: Array<{ id?: string; wheelId?: string; title?: string; date?: string; endDate?: string; time?: string; color?: string; status?: string; recurrence?: string; responsibleMode?: string; responsibleId?: string; participantIds?: Array<number | string> }> };
+    const wheels = new Map((workwheel.wheels ?? []).map(wheel => [String(wheel.id), wheel]));
+    const workwheelMeetingsForDate = (date: string) => (workwheel.activities ?? []).filter(activity => {
+      const responsible = activity.responsibleMode !== 'external' && Number(activity.responsibleId) === employeeId;
+      const participant = (activity.participantIds ?? []).map(Number).includes(employeeId);
+      if (!responsible && !participant) return false;
+      return activity.date === date || (activity.endDate && activity.date && date >= activity.date && date <= activity.endDate);
+    }).map(activity => ({ id: String(activity.id), wheelId: String(activity.wheelId || ''), wheelName: String(wheels.get(String(activity.wheelId || ''))?.name || 'Workwheel'), title: String(activity.title || 'Meeting'), time: String(activity.time || ''), color: String(activity.color || '#3b82f6'), status: String(activity.status || 'planned'), source: 'workwheel' as const }));
     return {
       linked: true,
       employee: { id: employee.id, name: employee.name, role: employee.role, organisation: employee.organisation, department: employee.department, section: employee.section },
@@ -180,7 +287,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
           const assignment = activityShifts[`${employee.id}_${date}_${activity.id}`];
           return { id: activity.id, name: activity.name, abbreviation: activity.abbreviation, color: activity.color, status: activity.status, assignment: assignment ? { assigned: assignment.assigned === true, excluded: assignment.excluded === true, shift: typeof assignment.shift === 'string' ? assignment.shift : undefined, workCode: assignment.workCode } : undefined };
         });
-        return { date, ...(status ? { status: { key: status.key, label: status.label, abbreviation: status.abbr, color: status.color, lifecycle: entry?.lifecycle ?? 'confirmed', durationType: entry?.durationType, time: entry?.time ?? null, isAbsence: status.isAbsence, isOutOfOffice: status.isOutOfOffice } } : {}), activities: dayActivities };
+        return { date, ...(status ? { status: { key: status.key, label: status.label, abbreviation: status.abbr, color: status.color, lifecycle: entry?.lifecycle ?? 'confirmed', durationType: entry?.durationType, time: entry?.time ?? null, isAbsence: status.isAbsence, isOutOfOffice: status.isOutOfOffice } } : {}), activities: dayActivities, workwheelMeetings: workwheelMeetingsForDate(date) };
       }),
     };
   });
@@ -251,11 +358,13 @@ export function buildApp(options: AppOptions): FastifyInstance {
     options.database.writeAuditLog({ userId: actor.userId, action: `absence.${request.body.decision}`, target: `absence-requests/${absence.id}` });
     return { request: absence };
   });
-  app.patch<{ Params: { userId: string }; Body: { name?: string; password?: string; role?: 'admin' | 'planner' | 'viewer'; disabled?: boolean } }>('/api/admin/users/:userId', async (request, reply) => {
+  app.patch<{ Params: { userId: string }; Body: { name?: string; username?: string; email?: string; password?: string; role?: 'admin' | 'planner' | 'viewer'; disabled?: boolean } }>('/api/admin/users/:userId', async (request, reply) => {
     const actor = requireRole(request, reply, ['admin']);
     if (!actor) return;
     const changes = request.body ?? {};
     if (changes.name !== undefined && !changes.name.trim()) return reply.code(400).send({ error: 'Name cannot be empty' });
+    if (changes.username !== undefined && !changes.username.trim()) return reply.code(400).send({ error: 'Username cannot be empty' });
+    if (changes.email !== undefined && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(changes.email.trim())) return reply.code(400).send({ error: 'A valid email is required' });
     if (changes.password !== undefined && changes.password.length < 12) return reply.code(400).send({ error: 'Password must be at least 12 characters' });
     try {
       const user = options.database.updateUser(request.params.userId, changes);
@@ -280,6 +389,15 @@ export function buildApp(options: AppOptions): FastifyInstance {
       return reply.code(404).send({ error: 'User not found' });
     }
   });
+  app.post<{ Params: { userId: string } }>('/api/admin/users/:userId/revoke-sessions', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin']);
+    if (!actor) return;
+    const user = options.database.getUserById(request.params.userId);
+    if (!user) return reply.code(404).send({ error: 'User not found' });
+    options.database.revokeAllAuthSessions(user.id, new Date().toISOString());
+    options.database.writeAuditLog({ userId: actor.userId, action: 'user.sessions_revoked', target: `users/${user.id}` });
+    return { ok: true };
+  });
 
   app.get('/api/planner', async (request, reply) => {
     if (!requireRole(request, reply, ['admin', 'planner', 'viewer'])) return;
@@ -299,7 +417,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     }
     try {
       const previousDocument = options.database.getPlanner().document;
-      const document = normalizeLegacyPlannerDocument(request.body.document);
+      const document = { ...normalizeLegacyPlannerDocument(request.body.document), lastChangedByUserId: actor.userId };
       if (actor.role === 'planner' && !plannerUpdateIsOperationalOnly(options.database.getPlanner().document, document)) {
         return reply.code(403).send({ error: 'Users may only change cells and activities' });
       }
@@ -313,6 +431,37 @@ export function buildApp(options: AppOptions): FastifyInstance {
       }
       return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid planner document' });
     }
+  });
+  app.post<{ Body: { workwheelActivityId?: string; expectedPlannerRevision?: number } }>('/api/workwheel/publish-to-schedule', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin', 'planner']);
+    if (!actor) return;
+    const workwheel = options.database.getWorkwheel().document as { activities?: Array<Record<string, unknown>>; wheels?: Array<Record<string, unknown>> };
+    const activity = (workwheel.activities ?? []).find(item => String(item.id) === String(request.body?.workwheelActivityId));
+    if (!activity) return reply.code(404).send({ error: 'Workwheel activity not found' });
+    const planner = options.database.getPlanner();
+    const linkedIdValue = activity.linkedScheduleActivityId;
+    const linkedId = linkedIdValue === null || linkedIdValue === undefined ? null : Number(linkedIdValue);
+    const nextActivityId = Number(planner.document.nextActId ?? 1);
+    const participants = Array.isArray(activity.participantIds) ? activity.participantIds.map(id => ({ id: Number(id) })).filter(item => Number.isFinite(item.id)) : [];
+    const linkedScheduleActivity = linkedId !== null && Number.isInteger(linkedId) && linkedId >= 0 ? planner.document.activities.find(item => item.id === linkedId) : undefined;
+    const scheduleActivityId = linkedScheduleActivity && linkedScheduleActivity.name !== String(activity.title || 'Workwheel activity') ? nextActivityId : (linkedScheduleActivity?.id ?? nextActivityId);
+    const scheduleActivity = { id: scheduleActivityId, workwheelActivityId: String(activity.id), source: 'workwheel', name: String(activity.title || 'Workwheel activity'), abbreviation: String(activity.title || 'Activity').slice(0, 6).toUpperCase(), startDate: String(activity.date || ''), endDate: activity.recurrence && activity.recurrence !== 'none' ? String(activity.date || '') : String(activity.endDate || activity.date || ''), color: String(activity.color || '#3b82f6'), status: (activity.status === 'cancelled' ? 'cancelled' : 'confirmed') as 'cancelled' | 'confirmed', participants };
+    const activities = [...planner.document.activities.filter(item => item.id !== scheduleActivity.id), scheduleActivity];
+    const activityShiftsMap = { ...((planner.document.activityShiftsMap as Record<string, unknown> | undefined) || {}) };
+    const assignmentStart = new Date(`${scheduleActivity.startDate}T00:00:00`);
+    const assignmentEnd = new Date(`${scheduleActivity.endDate}T00:00:00`);
+    for (const participant of participants) {
+      for (const cursor = new Date(assignmentStart); cursor <= assignmentEnd; cursor.setDate(cursor.getDate() + 1)) {
+        const date = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
+        activityShiftsMap[`${participant.id}_${date}_${scheduleActivity.id}`] = { shift: 'normal', workCodeId: null, administrativeTime: '', staffingImpactOverride: null, assigned: true, excluded: false };
+      }
+    }
+    const document = { ...planner.document, activities, activityShiftsMap, nextActId: Math.max(Number(planner.document.nextActId || 1), scheduleActivity.id + 1), lastChangedByUserId: actor.userId };
+    const result = options.database.savePlanner(document, planner.revision);
+    const updatedWorkwheel = { ...workwheel, activities: (workwheel.activities ?? []).map(item => String(item.id) === String(activity.id) ? { ...item, linkedScheduleActivityId: scheduleActivity.id } : item) };
+    const savedWorkwheel = options.database.saveWorkwheel(updatedWorkwheel, options.database.getWorkwheel().revision);
+    options.database.writeAuditLog({ userId: actor.userId, action: 'workwheel.published_to_schedule', target: `workwheel/${activity.id}/schedule/${scheduleActivity.id}` });
+    return { planner: result, workwheel: savedWorkwheel, scheduleActivity };
   });
   app.get('/api/admin/change-review', async (request, reply) => {
     const actor = requireRole(request, reply, ['admin']);
@@ -403,8 +552,8 @@ export function buildApp(options: AppOptions): FastifyInstance {
   return app;
 }
 
-function publicUser(user: { id: string; name: string; role: string; disabled: boolean; employeeId: number | null; createdAt?: string }) {
-  return { id: user.id, name: user.name, role: user.role, disabled: user.disabled, employeeId: user.employeeId, ...(user.createdAt ? { createdAt: user.createdAt } : {}) };
+function publicUser(user: { id: string; name: string; username?: string; email?: string; role: string; disabled: boolean; employeeId: number | null; createdAt?: string }) {
+  return { id: user.id, name: user.name, username: user.username, email: user.email, role: user.role, disabled: user.disabled, employeeId: user.employeeId, ...(user.createdAt ? { createdAt: user.createdAt } : {}) };
 }
 
 function localDate(date: Date): string {
