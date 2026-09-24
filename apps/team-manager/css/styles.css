@@ -597,7 +597,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .schedule-section-header { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-width:0; }
 .schedule-section-controls { display:flex; align-items:center; justify-content:flex-end; flex-wrap:nowrap; flex:0 0 auto; gap:3px !important; }
 .schedule-date-jump-button { position:relative;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;cursor:pointer; }
-.schedule-date-jump-input { position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0; }
+.schedule-date-jump-input { position:absolute;right:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0; }
 .schedule-topbar-controls { flex-wrap:wrap; justify-content:flex-end; }
 .schedule-activity-controls { display:flex; align-items:center; gap:5px; padding:3px 6px; border:1px solid var(--border); border-radius:7px; background:color-mix(in srgb,var(--muted-bg) 42%,var(--surface)); }
 .schedule-corner-header { display:flex; flex-direction:column; align-items:stretch; gap:4px; width:100%; min-width:0; }

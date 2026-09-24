@@ -50,6 +50,7 @@ export interface DailyEntry {
   readonly lifecycle?: 'confirmed' | 'planned';
   readonly durationType?: 'fullday' | '24hours' | 'time';
   readonly time?: LocalTimeRange | null;
+  readonly workCodeId?: string | null;
 }
 
 export interface PlannerDocument {
