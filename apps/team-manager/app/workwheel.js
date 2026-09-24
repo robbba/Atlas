@@ -338,11 +338,11 @@ async function renderWorkwheel() {
     // same Cartesian coordinate system used by the full wheel.
     const labelX = 50 + labelRadius / Math.SQRT2 * Math.sin(labelAngle);
     const labelY = 50 - labelRadius / Math.SQRT2 * Math.cos(labelAngle);
-    const segmentLabel = workwheelEsc(String(activity.title || 'Event').trim().slice(0, 4).toUpperCase());
+    const segmentLabel = workwheelEsc(String(activity.title || 'Event').trim());
     const segmentTitle = `${workwheelEsc(activity.title)} — ${workwheelEsc(workwheelDisplayDate(activity.occurrenceDate))}${durationDays > 1 ? ` to ${workwheelEsc(workwheelDisplayDate(activityEnd))}` : ''} · Week ${workwheelIsoWeek(activity.occurrenceDate)}`;
     const segmentStyle = `--segment-start:${workwheelEsc(start)}deg;--segment-size:${workwheelEsc(segmentSize)}deg;--segment-color:${workwheelEsc(activity.color)};--segment-inner:${laneInner}%;--segment-outer:${laneOuter}%`;
     const labelStyle = `${segmentStyle};--label-x:${workwheelEsc(labelX)}%;--label-y:${workwheelEsc(labelY)}%`;
-    return `<div class="workwheel-segment${item.long ? ' workwheel-segment-long' : ''}" data-activity-id="${workwheelEsc(activity.id)}" data-segment-start="${workwheelEsc(start)}" data-segment-size="${workwheelEsc(segmentSize)}" data-segment-inner="${workwheelEsc(laneInner)}" data-segment-outer="${workwheelEsc(laneOuter)}" style="${segmentStyle}" title="${segmentTitle}"></div><span class="workwheel-segment-label" style="${labelStyle}">${segmentLabel}</span>`;
+    return `<button type="button" class="workwheel-segment workwheel-segment-hit${item.long ? ' workwheel-segment-long' : ''}" data-activity-id="${workwheelEsc(activity.id)}" data-segment-start="${workwheelEsc(start)}" data-segment-size="${workwheelEsc(segmentSize)}" data-segment-inner="${workwheelEsc(laneInner)}" data-segment-outer="${workwheelEsc(laneOuter)}" style="${segmentStyle}" title="Open ${workwheelEsc(activity.title)} — ${workwheelEsc(workwheelDisplayDate(activity.occurrenceDate))}" aria-label="Open ${workwheelEsc(activity.title)} on ${workwheelEsc(workwheelDisplayDate(activity.occurrenceDate))}" onclick="event.stopPropagation();openWorkwheelActivity('${workwheelEsc(activity.id)}')"></button><span class="workwheel-segment-label" style="${labelStyle}">${segmentLabel}</span>`;
   }).join('');
   const legendActivities = [...new Map(wheelActivities.map(activity => [activity.id, activity])).values()];
   const list = legendActivities.map(activity => `<div class="workwheel-activity-row"><span class="workwheel-dot" style="background:${workwheelEsc(activity.color)}"></span><div><strong style="color:${workwheelEsc(activity.color)}">${workwheelEsc(activity.title)}</strong><small>${workwheelEsc(workwheelDisplayDate(activity.occurrenceDate))}${activity.startTime && activity.endTime ? ` · ${workwheelEsc(activity.startTime)}–${workwheelEsc(activity.endTime)}` : activity.time ? ` · ${workwheelEsc(activity.time)}` : ' · All day'}${activity.location ? ` · ${workwheelEsc(activity.location)}` : ''}${workwheelRecurrenceLabel(activity.recurrence) ? ` · ${workwheelRecurrenceLabel(activity.recurrence)}` : ''} · ${workwheelEsc(workwheelResponsible(activity))}</small></div><div class="workwheel-activity-actions"><button class="icon-btn" onclick="openWorkwheelActivity('${workwheelEsc(activity.id)}')">Edit</button><button class="icon-btn danger" title="Delete activity" onclick="confirmDeleteWorkwheelActivity('${workwheelEsc(activity.id)}')">Delete</button></div></div>`).join('') || '<div class="empty-note">No activities in this period.</div>';
@@ -354,9 +354,9 @@ async function renderWorkwheel() {
   const upcomingList = futureList;
 // Guidelines: events with specific dates appear on that date; events with times appear as notes alongside. Use consistent YYYY-MM-DD format.
   const emptyWheelDescription = 'Create a wheel for a team, process, or other organisational unit.';
-  const importedScheduleIds = new Set(workwheelState.activities.filter(activity => activity.wheelId === workwheelSelectedId).map(activity => Number(activity.sourceActivityId)).filter(Number.isFinite));
+  const importedScheduleIds = new Set(workwheelState.activities.filter(activity => activity.wheelId === workwheelSelectedId).flatMap(activity => [Number(activity.sourceActivityId), Number(activity.linkedScheduleActivityId)]).filter(Number.isFinite));
   const scheduleLibraryList = typeof activities !== 'undefined' && activities.length
-    ? activities.filter(activity => !importedScheduleIds.has(Number(activity.id))).slice().sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || ''))).map(activity => `<div class="workwheel-library-item"><span class="workwheel-dot" style="background:${workwheelEsc(activity.color || '#3b82f6')}"></span><div><strong>${workwheelEsc(activity.name || 'Activity')}</strong><small>${workwheelEsc(workwheelDisplayDate(activity.startDate || ''))}${activity.endDate && activity.endDate !== activity.startDate ? ` → ${workwheelEsc(workwheelDisplayDate(activity.endDate))}` : ''} · Schedule activity</small></div><button class="btn btn-sm" onclick="importScheduleWorkwheelActivity(${Number(activity.id)})">Make available</button></div>`).join('')
+    ? activities.filter(activity => !importedScheduleIds.has(Number(activity.id)) && !activity.workwheelActivityId).slice().sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || ''))).map(activity => `<div class="workwheel-library-item"><span class="workwheel-dot" style="background:${workwheelEsc(activity.color || '#3b82f6')}"></span><div><strong>${workwheelEsc(activity.name || 'Activity')}</strong><small>${workwheelEsc(workwheelDisplayDate(activity.startDate || ''))}${activity.endDate && activity.endDate !== activity.startDate ? ` → ${workwheelEsc(workwheelDisplayDate(activity.endDate))}` : ''} · Schedule activity</small></div><button class="btn btn-sm" onclick="importScheduleWorkwheelActivity(${Number(activity.id)})">Make available</button></div>`).join('')
     : '<div class="empty-note">No additional Schedule activities are available.</div>';
   const todayOverlay = workwheelTodayMarker(range.year, range.month, range.days);
   content.innerHTML = `<div class="workwheel-page"><header class="workwheel-header"><div><h1 class="page-title">Workwheel</h1><p class="page-sub">Plan recurring activities for teams and organisational units.</p></div><div class="flex gap-2"><button class="btn btn-sm" onclick="changeWorkwheelMonth(-1)">‹</button><strong class="workwheel-period">${workwheelMonth.toLocaleDateString('en-US', { month:'long', year:'numeric' })}</strong><button class="btn btn-sm" onclick="changeWorkwheelMonth(1)">›</button><button class="btn btn-primary" onclick="openWorkwheelActivity()">Add activity</button></div></header><div class="workwheel-toolbar"><select class="plain-select" onchange="selectWorkwheel(this.value)">${workwheelState.wheels.map(item => `<option value="${workwheelEsc(item.id)}" ${item.id === workwheelSelectedId ? 'selected' : ''}>${workwheelEsc(item.name)}</option>`).join('') || '<option>No wheels</option>'}</select><label class="workwheel-zoom">Zoom <select class="plain-select" onchange="setWorkwheelZoom(this.value)">${[75,100,125,150,175,200].map(value => `<option value="${value}" ${value === workwheelZoom ? 'selected' : ''}>${value}%</option>`).join('')}</select></label><button class="btn btn-sm" onclick="addWorkwheel()">New wheel</button><button class="btn btn-sm" onclick="openWorkwheelFileSettings()">Data file</button></div>${wheel ? `<div class="workwheel-layout"><section class="card workwheel-card"><div class="workwheel-viewport"><div class="workwheel-zoom-stage" style="--workwheel-scale:${workwheelZoom / 100}"><div class="workwheel-circle" data-direction="clockwise">${workwheelRingMarkup(range.year, range.month, range.days)}${todayOverlay}${segments || '<div class="workwheel-empty-ring">Add an activity</div>'}</div></div></div><div class="workwheel-legend">${list}</div></section><aside class="card workwheel-upcoming"><h3>Upcoming</h3><p class="page-sub">Next ${appSettings.workwheelUpcomingDays || 14} days</p>${upcomingList}</aside></div>` : `<div class="card workwheel-empty"><h3>Create your first wheel</h3><p class="page-sub">${emptyWheelDescription}</p><button class="btn btn-primary" onclick="addWorkwheel()">Create wheel</button></div>`}<section class="card workwheel-library"><div class="workwheel-library-header"><div><h3>Available schedule activities</h3><p class="page-sub">Import activities already created in Schedule into the selected wheel.</p></div></div><div class="workwheel-library-list">${scheduleLibraryList}</div></section>${focusPanel}</div>`;
@@ -368,6 +368,7 @@ async function renderWorkwheel() {
 }
 function selectWorkwheel(id) { workwheelSelectedId = id; renderWorkwheel(); }
 function handleWorkwheelCircleClick(event) {
+  if (event.target.closest('.workwheel-segment, .workwheel-segment-label')) return;
   const circle = event.currentTarget;
   const rect = circle.getBoundingClientRect();
   const x = event.clientX - (rect.left + rect.width / 2);
@@ -413,6 +414,8 @@ function openWorkwheelActivity(id = null) {
   workwheelEditingId = id;
   const activity = workwheelState.activities.find(item => item.id === id);
   const canEdit = workwheelCanEdit();
+  const modalHeading = document.querySelector('#workwheel-activity-modal h3');
+  if (modalHeading) modalHeading.textContent = activity ? `Edit ${activity.title}` : 'Add Workwheel activity';
   document.getElementById('ww-activity-title').value = activity?.title || '';
   document.getElementById('ww-activity-date').value = activity?.date || workwheelLocalDate(new Date());
   document.getElementById('ww-activity-end-date').value = activity?.endDate || '';
@@ -547,7 +550,11 @@ function importScheduleWorkwheelActivity(activityId) {
   if (!source || !workwheelSelectedId) return;
   const scheduleType = typeof activityTypeMeta === 'function' ? activityTypeMeta(source) : null;
   const scheduleColor = scheduleType?.color || source.color || '#3b82f6';
-  const existing = workwheelState.activities.find(activity => activity.sourceActivityId === Number(source.id) && activity.wheelId === workwheelSelectedId);
+  const existing = workwheelState.activities.find(activity => activity.wheelId === workwheelSelectedId && (Number(activity.sourceActivityId) === Number(source.id) || Number(source.workwheelActivityId) === Number(activity.id)));
+  if (!existing && source.workwheelActivityId) {
+    showToast('This Schedule activity already exists on the Workwheel.');
+    return;
+  }
   const imported = {
     id: existing?.id || `workwheel-schedule-${source.id}-${Date.now()}`,
     sourceActivityId: Number(source.id),
