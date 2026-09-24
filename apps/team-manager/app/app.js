@@ -783,6 +783,28 @@ function updateHostedAccountUi() {
   if (avatar) avatar.textContent = authenticated ? hostedUser.name.trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase() : '';
   const personalNav = document.getElementById('my-upcoming-nav');
   if (personalNav) personalNav.style.display = authenticated && hostedUser.employeeId !== null && hostedUser.employeeId !== undefined ? '' : 'none';
+  const absenceInboxNav = document.getElementById('absence-inbox-nav');
+  if (absenceInboxNav) absenceInboxNav.style.display = authenticated && hostedUser.role === 'admin' ? '' : 'none';
+  if (authenticated && hostedUser.role === 'admin') void updateAbsenceInboxBadge();
+  startAbsenceInboxPolling();
+}
+async function updateAbsenceInboxBadge() {
+  const nav = document.getElementById('absence-inbox-nav');
+  if (!nav || !hostedMode || hostedUser?.role !== 'admin') return;
+  try {
+    const response = await fetch('/api/admin/absence-requests', { cache: 'no-store' });
+    const requests = response.ok ? ((await response.json()).requests || []) : [];
+    const previousCount = hostedPendingAbsenceRequests.length;
+    hostedPendingAbsenceRequests = requests;
+    if (requests.length > previousCount && currentPage !== 'inbox') showToast(`${requests.length - previousCount} new absence request${requests.length - previousCount === 1 ? '' : 's'} received.`, 5000, { label: 'Open inbox', onClick: () => nav('inbox') });
+    const label = nav.querySelector('.sidebar-item-label');
+    if (label) label.textContent = requests.length ? `Absence inbox (${requests.length})` : 'Absence inbox';
+    nav.classList.toggle('has-notifications', requests.length > 0);
+  } catch { }
+}
+function startAbsenceInboxPolling() {
+  if (absenceInboxPollTimer) clearInterval(absenceInboxPollTimer);
+  absenceInboxPollTimer = hostedMode && hostedUser?.role === 'admin' ? setInterval(() => { void updateAbsenceInboxBadge(); }, 30000) : null;
 }
 function openPersonalSettings() {
   if (!hostedMode || !hostedUser) return;
@@ -2900,6 +2922,8 @@ let hostedMode = false;
 let hostedRevision = 0;
 let hostedUser = null;
 let personalUpcomingData = null;
+let hostedPendingAbsenceRequests = [];
+let absenceInboxPollTimer = null;
 let showAdminCheckIndicators = false;
 let operationalChecksEnabled = true;
 const hostedOperationalChecks = new Set();
@@ -3316,7 +3340,7 @@ function showHostedAuthScreen(mode, message = '') {
   document.body.appendChild(screen);
   const organizationStep = screen.querySelector('.atlas-wizard-step[data-step="2"]');
   if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation</h2><p>Choose the installation mode and name. Organisation depth is configured through actual personnel records.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner.</small></label><label class="atlas-checkbox"><input id="atlas-auth-multisite" type="checkbox"><span><b>Enable multisite hosting</b><small>Allow a platform administrator to provision multiple isolated organisations.</small></span></label><label id="atlas-auth-organisation-slug-row" hidden>Organisation code or slug<input id="atlas-auth-organisation-slug" maxlength="64" pattern="[a-z0-9-]+" placeholder="operations-team"><small>Lowercase letters, numbers, and hyphens only.</small></label>';
-  if (mode === 'login') screen.querySelector('#atlas-auth-form')?.insertAdjacentHTML('afterbegin', '<label>Organisation code or slug<input id="atlas-auth-organisation-slug" maxlength="64" placeholder="Leave blank for single-site hosting" autocomplete="organization"></label>');
+  if (mode === 'login') screen.querySelector('#atlas-auth-form')?.insertAdjacentHTML('afterbegin', '');
   screen.querySelector('#atlas-auth-multisite')?.addEventListener('change', event => { const row = screen.querySelector('#atlas-auth-organisation-slug-row'); if (row) row.hidden = !event.target.checked; });
   const form = screen.querySelector('#atlas-auth-form');
   const error = screen.querySelector('#atlas-auth-error');
@@ -3332,7 +3356,7 @@ function showHostedAuthScreen(mode, message = '') {
     button.disabled = true;
     error.textContent = '';
     try {
-      const payload = { username: form.querySelector('#atlas-auth-username').value, password: form.querySelector('#atlas-auth-password').value, organizationSlug: form.querySelector('#atlas-auth-organisation-slug')?.value.trim() || undefined };
+      const payload = { username: form.querySelector('#atlas-auth-username').value, password: form.querySelector('#atlas-auth-password').value };
       if (mode === 'setup') { payload.organizationName = form.querySelector('#atlas-auth-organisation-name').value.trim(); payload.multisiteEnabled = form.querySelector('#atlas-auth-multisite').checked; }
       if (mode === 'setup') Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, organizationSlug: form.querySelector('#atlas-auth-organisation-slug')?.value.trim() || 'default', multisiteEnabled: form.querySelector('#atlas-auth-multisite')?.checked === true, timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
       const endpoint = mode === 'setup' ? '/api/setup/create-admin' : '/api/auth/login';
@@ -3340,6 +3364,10 @@ function showHostedAuthScreen(mode, message = '') {
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || 'Authentication failed.');
       hostedUser = result.user;
+      if (mode === 'login' && Array.isArray(result.organizations) && result.organizations.length > 1) {
+        const selectedSlug = await chooseHostedOrganization(result.organizations);
+        if (!selectedSlug) throw new Error('Choose an organization to continue.');
+      }
       screen.remove();
       await loadHostedPlanner();
       if (mode === 'setup') {
@@ -3352,6 +3380,16 @@ function showHostedAuthScreen(mode, message = '') {
       error.textContent = err.message || 'Authentication failed.';
       button.disabled = false;
     }
+  });
+}
+function chooseHostedOrganization(organizations) {
+  return new Promise(resolve => {
+    const options = organizations.map((organization, index) => `<option value="${esc(organization.slug)}" ${index === 0 ? 'selected' : ''}>${esc(organization.name)} · ${esc(organization.slug)}</option>`).join('');
+    const screen = document.createElement('div');
+    screen.id = 'atlas-organization-choice';
+    screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>Choose organisation</h1><p class="atlas-auth-message">Select the organisation you want to open.</p><label>Organisation<select id="atlas-organization-select">${options}</select></label><button id="atlas-organization-continue" class="btn-primary" type="button">Continue</button></div>`;
+    document.body.appendChild(screen);
+    screen.querySelector('#atlas-organization-continue').addEventListener('click', () => { const slug = screen.querySelector('#atlas-organization-select').value; screen.remove(); resolve(slug); });
   });
 }
 
@@ -4465,6 +4503,7 @@ function nav(page) {
   if (page === 'shift-rotation' && appSettings.shiftRotationEnabled !== true) page = 'grid';
   if (page === 'workwheel' && appSettings.workwheelEnabled !== true) page = 'grid';
   if (page === 'bug-report' && appSettings.bugReportEnabled !== true) page = 'grid';
+  if (page === 'inbox' && (!hostedMode || hostedUser?.role !== 'admin')) page = 'grid';
   if (page === 'shift-rotation' && currentPage !== 'shift-rotation') shiftRotationInitialScrollPending = true;
   currentPage = page;
   document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.page === page));
@@ -4524,16 +4563,24 @@ async function renderMyUpcoming() {
     }
     const dateFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
     const eventDays = personalUpcomingData.days.filter(day => day.status || day.activities?.length || day.workwheelMeetings?.length);
-    content.innerHTML = `<div class="personal-view"><div class="personal-header"><div><div class="eyebrow">YOUR NEXT ${lookaheadDays} DAYS</div><h1>${esc(personalUpcomingData.employee.name)}</h1><p>${esc([personalUpcomingData.employee.role, personalUpcomingData.employee.department, personalUpcomingData.employee.section].filter(Boolean).join(' · '))}</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-primary" onclick="openAbsenceRequestPrompt()">Request absence</button><div class="personal-range">${esc(personalUpcomingData.startDate)} — ${esc(personalUpcomingData.endDate)}</div></div></div><div class="personal-days">${eventDays.length ? eventDays.map(day => `<section class="personal-day"><div class="personal-day-heading"><h2>${esc(dateFormatter.format(new Date(`${day.date}T12:00:00`)))}</h2><span>${esc(day.date)}</span></div><div class="personal-items">${renderPersonalDayItems(day)}</div></section>`).join('') : '<div class="personal-empty"><h2>No upcoming status entries</h2><p>You have no status codes recorded during the selected lookahead.</p></div>'}</div></div>`;
+    content.innerHTML = `<div class="personal-view"><div class="personal-header"><div><div class="eyebrow">YOUR NEXT ${lookaheadDays} DAYS</div><h1>${esc(personalUpcomingData.employee.name)}</h1><p>${esc([personalUpcomingData.employee.role, personalUpcomingData.employee.department, personalUpcomingData.employee.section].filter(Boolean).join(' · '))}</p></div><div style="display:flex;gap:8px;align-items:center">${hostedUser?.role !== 'viewer' ? '<button class="btn btn-primary" onclick="openAbsenceRequestPrompt()">Request absence</button>' : ''}<div class="personal-range">${esc(personalUpcomingData.startDate)} — ${esc(personalUpcomingData.endDate)}</div></div></div><div class="personal-days">${eventDays.length ? eventDays.map(day => `<section class="personal-day"><div class="personal-day-heading"><h2>${esc(dateFormatter.format(new Date(`${day.date}T12:00:00`)))}</h2><span>${esc(day.date)}</span></div><div class="personal-items">${renderPersonalDayItems(day)}</div></section>`).join('') : '<div class="personal-empty"><h2>No upcoming status entries</h2><p>You have no status codes recorded during the selected lookahead.</p></div>'}</div></div>`;
   } catch (error) { content.innerHTML = `<div class="personal-view"><div class="personal-empty"><h2>Unable to load your schedule</h2><p>${esc(error.message || 'Please try again.')}</p></div></div>`; }
 }
 async function openAbsenceRequestPrompt() {
+  if (hostedMode && hostedUser?.role === 'viewer') { showToast('Read-only users cannot submit absence requests.', 3500); return; }
   const absenceStatuses = statuses.filter(status => status.isAbsence);
   if (!absenceStatuses.length) { alert('No absence codes are configured.'); return; }
-  const statusKey = prompt(`Absence code:\n${absenceStatuses.map(status => `${status.key}: ${status.label}${status.requiresApproval ? ' (approval required)' : ''}`).join('\n')}`, absenceStatuses[0].key);
-  if (!statusKey) return;
-  const startDate = prompt('Start date (YYYY-MM-DD)', todayStr()); if (!startDate) return;
-  const endDate = prompt('End date (YYYY-MM-DD)', startDate); if (!endDate) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg open';
+  modal.innerHTML = `<div class="modal" style="width:420px"><h3>Request absence</h3><p class="modal-desc">Submit an absence report or request it for approval.</p><div class="form-row"><label>Absence code<select id="absence-request-status" class="plain-select">${absenceStatuses.map(status => `<option value="${esc(status.key)}">${esc(status.label)}${status.requiresApproval ? ' · Approval required' : ''}</option>`).join('')}</select></label></div><div class="form-row-2"><div class="form-row" style="margin:0"><label>Start date<input id="absence-request-start" type="date" value="${todayStr()}"></label></div><div class="form-row" style="margin:0"><label>End date<input id="absence-request-end" type="date" value="${todayStr()}"></label></div></div><div class="modal-actions"><button class="btn" type="button" id="absence-request-cancel">Cancel</button><button class="btn btn-primary" type="button" id="absence-request-submit">Submit request</button></div></div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('#absence-request-cancel').onclick = close;
+  await new Promise(resolve => { modal.querySelector('#absence-request-submit').onclick = async () => { const start = modal.querySelector('#absence-request-start').value; const end = modal.querySelector('#absence-request-end').value; if (!modal.querySelector('#absence-request-status').value || !start || !end || end < start) { alert('Choose a valid absence code and date range.'); return; } resolve(); }; });
+  const statusKey = modal.querySelector('#absence-request-status').value;
+  const startDate = modal.querySelector('#absence-request-start').value;
+  const endDate = modal.querySelector('#absence-request-end').value;
+  close();
   const response = await fetch('/api/me/absence-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ statusKey, startDate, endDate, durationType: 'fullday' }) });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) { alert(result.error || 'Could not submit absence request.'); return; }
@@ -5540,6 +5587,10 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const isPlannedStatus = statusEntryIsPlanned(entry);
   const acts = cellActivities(emp.id, ds);
   const workwheelEvents = workwheelCellEvents(emp.id, ds);
+  const pendingAbsenceRequest = hostedMode && hostedUser?.role === 'admin' && typeof hostedPendingAbsenceRequests !== 'undefined'
+    ? hostedPendingAbsenceRequests.find(request => Number(request.employeeId) === Number(emp.id) && ds >= request.startDate && ds <= request.endDate)
+    : null;
+  const pendingAbsenceStatus = pendingAbsenceRequest ? siFor(pendingAbsenceRequest.statusKey) : null;
   const rotation = rotationRecord(emp.id, ds);
   const rotationMeta = rotationShiftMeta(rotation?.shift);
   const birthday = isEmployeeBirthday(emp, ds);
@@ -5592,6 +5643,9 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
     cellStyleStr = activityStatus(primaryActivity) === 'tentative'
       ? `background:repeating-linear-gradient(135deg,color-mix(in srgb,${activityColor} 28%,transparent) 0 5px,color-mix(in srgb,${activityColor} 7%,transparent) 5px 10px);color:${activityColor}`
       : `background:${activityColor}20;color:${activityColor}`;
+  } else if (!isPartial && pendingAbsenceStatus && pendingAbsenceRequest) {
+    cellText = pendingAbsenceStatus.abbr;
+    cellStyleStr = `background:repeating-linear-gradient(135deg,${pendingAbsenceStatus.color}30 0 5px,${pendingAbsenceStatus.color}12 5px 10px);color:${pendingAbsenceStatus.color};border-color:${pendingAbsenceStatus.color}50`;
   } else if (!isPartial && si) {
     cellText = si.abbr;
     cellStyleStr = isPlannedStatus
@@ -5633,7 +5687,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
     ? ' day-shift-cell'
      : (primaryActivity?.assignment.shift === 'evening' ? ' evening-shift-cell' : (primaryActivity?.assignment.shift === 'night' ? ' night-shift-cell' : '')));
   const activityClass = primaryActivity ? ' has-activity' : '';
-  const plannedClass = primaryActivity && activityStatus(primaryActivity) === 'tentative' ? ' planned-activity-cell' : '';
+  const plannedClass = (primaryActivity && activityStatus(primaryActivity) === 'tentative') || Boolean(pendingAbsenceRequest) ? ' planned-activity-cell' : '';
   const activityColor = activeWorkCode?.color || primaryActivity?.color || 'transparent';
   const activityTextStyle = primaryActivity ? `color:${activityColor};` : '';
   const cancelledTextStyle = isCancelledActivity ? 'text-decoration:line-through;text-decoration-color:var(--destructive);text-decoration-thickness:2px;' : '';
@@ -5691,6 +5745,7 @@ function goToday() {
 function jumpToScheduleDate(value) {
   if (!isValidIsoDate(value)) return;
   const target = new Date(`${value}T00:00:00`);
+  const requestedPeriod = gridPeriod;
   if (gridPeriod === 'year') {
     gridYear = target.getFullYear();
     scheduleAnchorDate = value;
@@ -5702,9 +5757,17 @@ function jumpToScheduleDate(value) {
   setTimeout(() => {
     const scroll = document.getElementById('grid-scroll');
     const header = scroll?.querySelector(`th[data-date="${value}"]`);
-    if (gridPeriod === 'year' && !header) {
+    if (requestedPeriod === 'year' && !header) {
       const firstHeader = scroll?.querySelector('th[data-date]');
-      if (firstHeader) firstHeader.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      if (firstHeader) {
+        const firstDate = firstHeader.dataset.date;
+        jumpToScheduleDate._fallbackDate = value;
+        firstHeader.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        setTimeout(() => {
+          const targetHeader = scroll.querySelector(`th[data-date="${value}"]`);
+          if (targetHeader) targetHeader.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        }, 120);
+      }
       return;
     }
     if (!scroll || !header) return;
@@ -6281,6 +6344,7 @@ function setPickerStatusLifecycle(lifecycle) {
 }
 async function removeSelectedStatus() {
   if (pickerEmpId == null || !pickerDate) return;
+  if (hostedMode && hostedUser?.role === 'viewer') { showToast('Read-only users cannot modify the Schedule.', 3500); return; }
   const dates = pickerDates.length ? pickerDates : [pickerDate];
   await mutateState('removeSelectedStatus', () => {
     dates.forEach(date => entriesMap[`${pickerEmpId}_${date}`] = null);
@@ -6298,12 +6362,24 @@ async function removeSelectedStatus() {
 }
 async function saveWithDuration(durationType) {
   if (pickerEmpId == null || !pickerDate || !pickerSelectedStatus) return;
+  if (hostedMode && hostedUser?.role === 'viewer') { showToast('Read-only users cannot modify the Schedule.', 3500); return; }
   let time = null;
   if (durationType === 'time') {
     time = document.getElementById('pk-time').value.trim();
     if (!time) { alert('Enter a time range, e.g. 1000-1130.'); return; }
   }
   const dates = pickerDates.length ? pickerDates : [pickerDate];
+  const selectedStatusDefinition = siFor(pickerSelectedStatus);
+  if (selectedStatusDefinition?.isAbsence && pickerStatusLifecycle === 'planned' && hostedMode && hostedUser?.role === 'viewer') { showToast('Read-only users cannot plan or request absence.', 3500); return; }
+  if (selectedStatusDefinition?.isAbsence && selectedStatusDefinition.requiresApproval === true && pickerStatusLifecycle === 'planned') {
+    const employee = empById(pickerEmpId);
+    const response = await fetch('/api/me/absence-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ statusKey: pickerSelectedStatus, startDate: dates.slice().sort()[0], endDate: dates.slice().sort().at(-1), durationType, timeRange: time }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) { alert(result.error || 'Could not submit the absence request.'); return; }
+    showToast(`Absence request submitted for ${employee?.name || 'personnel'}.`, 4000);
+    closePicker();
+    return;
+  }
   await mutateState('saveWithDuration', () => {
     for (const date of dates) entriesMap[`${pickerEmpId}_${date}`] = { status: pickerSelectedStatus, durationType, time, lifecycle: pickerStatusLifecycle };
   });
@@ -8843,7 +8919,7 @@ function renderDashboard() {
       <div class="page-sub">Staffing overview for today and upcoming absences.</div>
       <div class="muted text-sm" style="margin-top:6px">Today: <b style="color:var(--text)">${fmtMed(today)}</b></div>
     </div>
-    ${hostedMode && hostedUser?.role === 'admin' ? '<div class="dashboard-alert-grid mb-6"><div id="admin-change-review-card" class="card admin-change-review-card"><div class="card-title mb-2" style="font-size:15px">Grid Changes</div><div class="muted text-sm">Loading recent changes…</div></div><div id="absence-request-card" class="card absence-request-card"><div class="card-title mb-2" style="font-size:15px">Absence Requests</div><div class="muted text-sm">Loading requests…</div></div></div>' : ''}
+    ${hostedMode && hostedUser?.role === 'admin' ? '<div class="dashboard-alert-grid mb-6"><div id="admin-change-review-card" class="card admin-change-review-card"><div class="card-title mb-2" style="font-size:15px">Grid Changes</div><div class="muted text-sm">Loading recent changes…</div></div></div>' : ''}
     <div class="dash-grid-4 mb-6">
       <div class="card">
         <div class="card-title-muted">Available</div>
@@ -8996,20 +9072,8 @@ function renderDashboard() {
     </div>
     </div>`;
   if (hostedMode && hostedUser?.role === 'admin') void loadAdminChangeReviewCard();
-  if (hostedMode && hostedUser?.role === 'admin') void loadAbsenceRequestCard();
 }
 
-async function loadAbsenceRequestCard() {
-  const card = document.getElementById('absence-request-card');
-  if (!card) return;
-  try {
-    const response = await fetch('/api/admin/absence-requests', { cache: 'no-store' });
-    if (!response.ok) throw new Error('Could not load requests.');
-    const requests = (await response.json()).requests || [];
-    const rows = requests.slice(0, 5).map(request => { const employee = empById(request.employeeId); const status = siFor(request.statusKey); return `<div class="absence-row"><div><strong>${esc(employee?.name || `Employee ${request.employeeId}`)}</strong><div class="muted text-sm">${esc(status?.label || request.statusKey)} · ${esc(request.startDate)} — ${esc(request.endDate)}</div></div><div style="display:flex;gap:5px"><button class="btn btn-sm" onclick="decideAbsenceRequest('${request.id}','declined')">Decline</button><button class="btn btn-sm btn-primary" onclick="decideAbsenceRequest('${request.id}','approved')">Approve</button></div></div>`; }).join('');
-    card.innerHTML = `<div class="flex items-center justify-between" style="gap:8px"><div><div class="card-title" style="font-size:15px">Absence Requests</div><div class="muted text-sm" style="margin-top:4px">${requests.length ? `${requests.length} pending request${requests.length === 1 ? '' : 's'}` : 'No pending requests'}</div></div>${requests.length > 5 ? '<button class="btn btn-sm" onclick="openAbsenceRequestModal()">View all</button>' : ''}</div>${rows ? `<div class="admin-change-list">${rows}</div>` : '<div class="empty-note" style="padding:18px 0 4px">No pending absence requests.</div>'}`;
-  } catch (error) { card.innerHTML = `<div class="card-title" style="font-size:15px">Absence Requests</div><div class="muted text-sm">${esc(error.message || 'Could not load requests.')}</div>`; }
-}
 async function openAbsenceRequestModal() { await renderAbsenceInbox(); }
 
 async function loadAdminChangeReviewCard() {

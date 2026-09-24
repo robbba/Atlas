@@ -70,12 +70,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
       return reply.code(400).send({ error: 'Could not create administrator' });
     }
   });
-  app.post<{ Body: { name?: string; username?: string; password?: string; organizationSlug?: string } }>('/api/auth/login', async (request, reply) => {
+  app.post<{ Body: { name?: string; username?: string; password?: string } }>('/api/auth/login', async (request, reply) => {
     const username = (request.body?.username ?? request.body?.name)?.trim();
     const password = request.body?.password ?? '';
     const installation = options.database.getInstallationSettings();
-    const requestedSlug = String(request.body?.organizationSlug || '').trim().toLowerCase();
-    if (installation.multisiteEnabled && requestedSlug !== installation.organizationSlug) return reply.code(401).send({ error: 'Unknown organization code' });
     const user = username ? options.database.listUsers().find(candidate => candidate.username?.toLowerCase() === username.toLowerCase()) : undefined;
     if (!user || user.disabled || !options.database.verifyUserPassword(user.id, password)) return reply.code(401).send({ error: 'Invalid credentials' });
     options.database.touchUserActivity(user.id, true);
@@ -84,7 +82,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     options.database.createAuthSession(user.id, token, expiresAt);
     options.database.writeAuditLog({ userId: user.id, action: 'auth.login', target: `users/${user.id}` });
     setSessionCookie(reply, token, 8 * 60 * 60);
-    return { user: publicUser(user), expiresAt };
+    return { user: publicUser(user), organizations: [{ slug: installation.organizationSlug, name: installation.organizationName }], expiresAt };
   });
   app.get('/api/auth/me', async (request, reply) => {
     const session = requireRole(request, reply, ['admin', 'planner', 'viewer']);
@@ -298,7 +296,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     return { requests: employeeId === null ? [] : options.database.listAbsenceRequests(employeeId) };
   });
   app.post<{ Body: { statusKey?: string; startDate?: string; endDate?: string; durationType?: 'fullday' | '24hours' | 'time'; timeRange?: string | null } }>('/api/me/absence-requests', async (request, reply) => {
-    const session = requireRole(request, reply, ['admin', 'planner', 'viewer']);
+    const session = requireRole(request, reply, ['admin', 'planner']);
     if (!session) return;
     const employeeId = options.database.getUserPersonnelLink(session.userId);
     if (employeeId === null) return reply.code(400).send({ error: 'Your account is not linked to personnel' });
@@ -308,6 +306,17 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const requestStatus = (status as typeof status & { requiresApproval?: boolean }).requiresApproval === true ? 'pending' as const : 'approved' as const;
     const absence = options.database.createAbsenceRequest({ requesterUserId: session.userId, employeeId, statusKey: status.key, startDate: request.body.startDate, endDate: request.body.endDate, durationType: request.body.durationType ?? 'fullday', timeRange: request.body.timeRange ?? null, requestStatus });
     options.database.writeAuditLog({ userId: session.userId, action: requestStatus === 'approved' ? 'absence.self_reported' : 'absence.requested', target: `absence-requests/${absence.id}` });
+    return reply.code(201).send({ request: absence });
+  });
+  app.post<{ Body: { employeeId?: number; statusKey?: string; startDate?: string; endDate?: string; durationType?: 'fullday' | '24hours' | 'time'; timeRange?: string | null } }>('/api/admin/absence-requests', async (request, reply) => {
+    const actor = requireRole(request, reply, ['admin']);
+    if (!actor) return;
+    const employeeId = Number(request.body?.employeeId);
+    const planner = options.database.getPlanner().document;
+    const status = planner.statuses.find(candidate => candidate.key === request.body?.statusKey && candidate.isAbsence);
+    if (!Number.isInteger(employeeId) || !planner.employees.some(employee => employee.id === employeeId) || !status || !request.body?.startDate || !request.body.endDate || request.body.endDate < request.body.startDate) return reply.code(400).send({ error: 'Valid employee, absence code, and date range are required' });
+    const absence = options.database.createAbsenceRequest({ requesterUserId: actor.userId, employeeId, statusKey: status.key, startDate: request.body.startDate, endDate: request.body.endDate, durationType: request.body.durationType ?? 'fullday', timeRange: request.body.timeRange ?? null, requestStatus: 'pending' });
+    options.database.writeAuditLog({ userId: actor.userId, action: 'absence.requested_for_employee', target: `absence-requests/${absence.id}` });
     return reply.code(201).send({ request: absence });
   });
   app.get('/api/admin/absence-requests', async (request, reply) => {
