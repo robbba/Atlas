@@ -5279,13 +5279,10 @@ function changeActivityPage(direction) {
   const visibleActivities = [...pastActs, ...currentActs];
   const maxOffset = Math.max(0, visibleActivities.length - activityPageSize);
   activityPageOffset = Math.min(Math.max(0, activityPageOffset + direction), maxOffset);
+  const scroll = document.getElementById('grid-scroll');
+  const previousScrollLeft = scroll?.scrollLeft ?? 0;
   renderGridBody(scheduleDays(), todayStr());
-  requestAnimationFrame(() => {
-    const visible = [...document.querySelectorAll('tr.activity-grid-row')];
-    const target = direction > 0 ? visible.at(-1) : visible[0];
-    const cell = target?.querySelector('.activity-select-cell[data-date]');
-    if (cell) document.getElementById('grid-scroll')?.scrollTo({ left: Math.max(0, cell.offsetLeft - 260), behavior: 'smooth' });
-  });
+  if (scroll) scroll.scrollLeft = previousScrollLeft;
 }
 let activityWheelLocked = false;
 function handleActivityListWheel(event) {
