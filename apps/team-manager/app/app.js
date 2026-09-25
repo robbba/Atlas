@@ -5269,20 +5269,34 @@ function activityPageCapacity() {
 function changeActivityPage(direction) {
   const today = todayStr();
   const { start, end } = scheduleRange();
-  const yearActs = activities.filter(a => a.startDate <= end && a.endDate >= start);
+  const yearActs = activities.filter(a => a.startDate <= end && a.endDate >= start && activityVisibleForScheduleSection(a));
   const activityFilter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
   const filteredYearActs = activityFilter === 'all'
     ? yearActs
     : yearActs.filter(a => activityStatus(a) === activityFilter);
   const currentActs = filteredYearActs.filter(a => a.endDate >= today);
   const pastActs = filteredYearActs.filter(a => a.endDate < today);
-  const visibleActivities = [...pastActs, ...currentActs];
+  const visibleActivities = [...(pastActivitiesExpanded ? pastActs : []), ...currentActs]
+    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
   const maxOffset = Math.max(0, visibleActivities.length - activityPageSize);
   activityPageOffset = Math.min(Math.max(0, activityPageOffset + direction), maxOffset);
+  const targetIndex = direction > 0
+    ? Math.min(visibleActivities.length - 1, activityPageOffset + activityPageSize - 1)
+    : activityPageOffset;
+  const targetActivity = visibleActivities[targetIndex];
+  const targetDate = targetActivity
+    ? (targetActivity.startDate < start ? start : targetActivity.startDate > end ? end : targetActivity.startDate)
+    : null;
   const scroll = document.getElementById('grid-scroll');
-  const previousScrollLeft = scroll?.scrollLeft ?? 0;
   renderGridBody(scheduleDays(), todayStr());
-  if (scroll) scroll.scrollLeft = previousScrollLeft;
+  if (scroll && targetActivity && targetDate) requestAnimationFrame(() => {
+    const cell = scroll.querySelector(`td.activity-select-cell[data-row-key="act-${targetActivity.id}"][data-date="${targetDate}"]`);
+    if (!cell) return;
+    const scrollRect = scroll.getBoundingClientRect();
+    const cellContentLeft = scroll.scrollLeft + cell.getBoundingClientRect().left - scrollRect.left;
+    const stickyWidth = scroll.querySelector('.gtable tbody .sticky-left')?.getBoundingClientRect().width || 240;
+    scroll.scrollLeft = Math.max(0, cellContentLeft - stickyWidth - 12);
+  });
 }
 let activityWheelLocked = false;
 function handleActivityListWheel(event) {
