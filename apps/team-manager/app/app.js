@@ -122,7 +122,7 @@ function lsSet(key, value) {
 }
 
 // ═══ APP SETTINGS ════════════════════════════════════════════════════════════
-const APP_VERSION = '0.3.0';
+const APP_VERSION = '0.3.1';
 const DATA_VERSION = 9;
 const DEFAULT_WORK_CODES = [];
 const DEFAULT_SHIFT_TEMPLATES = [];
@@ -707,6 +707,7 @@ function openSettings() {
   updateDefaultJsonStatus();
   const about = document.getElementById('set-about-version');
     if (about) about.textContent = `ATLAS v${APP_VERSION} · Adaptive Timeline, Load & Allocation System · Data format v${DATA_VERSION}`;
+    document.querySelectorAll('[data-copyright-year]').forEach(element => { element.textContent = String(new Date().getFullYear()); });
   document.getElementById('settings-modal').classList.add('open');
   const userInfo = document.getElementById('hosted-user-info');
   if (userInfo) userInfo.textContent = hostedUser ? `Signed in as ${hostedUser.name} · ${accountRoleLabel(hostedUser.role)}` : '';
@@ -3886,6 +3887,16 @@ function hierarchyParentPath(employee, level) {
 function hierarchyOrderFor(level, parentPath, value) {
   return Number(hierarchyOrder[level]?.[hierarchyOrderKey(...parentPath, value)]) || 9999;
 }
+function compareHierarchyAssignment(left, right) {
+  const leftUnassigned = !String(left || '').trim() || /^unassigned(?:\s|$)/i.test(String(left).trim());
+  const rightUnassigned = !String(right || '').trim() || /^unassigned(?:\s|$)/i.test(String(right).trim());
+  return leftUnassigned === rightUnassigned ? 0 : leftUnassigned ? -1 : 1;
+}
+function compareAssignedHierarchyValues(level, parentPath, left, right) {
+  return compareHierarchyAssignment(left, right) ||
+    hierarchyOrderFor(level, parentPath, left) - hierarchyOrderFor(level, parentPath, right) ||
+    String(left || '').localeCompare(String(right || ''), 'nb', { sensitivity: 'base' });
+}
 function migrateHierarchyOrderTree() {
   hierarchyOrder = normalizeHierarchyOrderTree(hierarchyOrder);
   const levels = ['department', 'section', 'process', 'team'];
@@ -3965,7 +3976,7 @@ function ensureDepartmentOrders() {
   }
 }
 function compareDepartments(left, right) {
-  return (hierarchyOrderFor('department', ['Unassigned organisation'], left) - hierarchyOrderFor('department', ['Unassigned organisation'], right)) ||
+  return compareAssignedHierarchyValues('department', ['Unassigned organisation'], left, right) ||
     ((departmentOrder[left] ?? 9999) - (departmentOrder[right] ?? 9999)) ||
     left.localeCompare(right, 'nb', { sensitivity: 'base' });
 }
@@ -4006,32 +4017,33 @@ function compareSubdepartments(dept, left, right) {
 function comparePersonnelGroupLeaves(dept, left, right) {
   const leftParts = String(left || '').split(' / ');
   const rightParts = String(right || '').split(' / ');
-  const sectionOrder = hierarchyOrderFor('section', ['Unassigned organisation', dept], leftParts[0]);
-  const rightSectionOrder = hierarchyOrderFor('section', ['Unassigned organisation', dept], rightParts[0]);
-  return (sectionOrder - rightSectionOrder) ||
+  const sectionOrder = compareAssignedHierarchyValues('section', ['Unassigned organisation', dept], leftParts[0], rightParts[0]);
+  return sectionOrder ||
     leftParts.slice(1).join(' / ').localeCompare(rightParts.slice(1).join(' / '), 'nb', { sensitivity: 'base' }) ||
     String(left || '').localeCompare(String(right || ''), 'nb', { sensitivity: 'base' });
 }
 function compareScheduleGroups(left, right) {
   const leftEmp = left.emps?.[0] || {};
   const rightEmp = right.emps?.[0] || {};
-  const organisationComparison = String(leftEmp.organisation || '').localeCompare(String(rightEmp.organisation || ''), 'nb', { sensitivity: 'base' });
+  const organisationComparison = compareHierarchyAssignment(leftEmp.organisation, rightEmp.organisation) || String(leftEmp.organisation || '').localeCompare(String(rightEmp.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
-  const departmentComparison = hierarchyOrderFor('department', [leftEmp.organisation || 'Unassigned organisation'], leftEmp.department || 'Unassigned department') - hierarchyOrderFor('department', [rightEmp.organisation || 'Unassigned organisation'], rightEmp.department || 'Unassigned department');
+  const departmentComparison = compareAssignedHierarchyValues('department', [leftEmp.organisation || 'Unassigned organisation'], leftEmp.department || 'Unassigned department', rightEmp.department || 'Unassigned department');
   if (departmentComparison) return departmentComparison;
   const leftSection = leftEmp.section || leftEmp.subdepartment || '';
   const rightSection = rightEmp.section || rightEmp.subdepartment || '';
-  const sectionComparison = hierarchyOrderFor('section', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department'], leftSection) - hierarchyOrderFor('section', [rightEmp.organisation || 'Unassigned organisation', rightEmp.department || 'Unassigned department'], rightSection);
+  if (!leftSection && rightSection) return -1;
+  if (leftSection && !rightSection) return 1;
+  const sectionComparison = compareAssignedHierarchyValues('section', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department'], leftSection, rightSection);
   if (sectionComparison) return sectionComparison;
-  const leftProcessOrder = hierarchyOrderFor('process', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department', leftSection], leftEmp.process || 'Unassigned process');
-  const rightProcessOrder = hierarchyOrderFor('process', [rightEmp.organisation || 'Unassigned organisation', rightEmp.department || 'Unassigned department', rightSection], rightEmp.process || 'Unassigned process');
-  const processComparison = leftProcessOrder - rightProcessOrder || String(leftEmp.process || '').localeCompare(String(rightEmp.process || ''), 'nb', { sensitivity: 'base' });
+  const processComparison = compareAssignedHierarchyValues('process', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department', leftSection], leftEmp.process, rightEmp.process);
   if (processComparison) return processComparison;
-  const leftPersonnelOrder = Math.min(...(left.emps || []).map(employee => Number(employee.sortOrder) || 9999));
-  const rightPersonnelOrder = Math.min(...(right.emps || []).map(employee => Number(employee.sortOrder) || 9999));
   const leftTeamOrder = hierarchyOrderFor('team', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department', leftSection, leftEmp.process || 'Unassigned process'], leftEmp.team || 'Unassigned team');
   const rightTeamOrder = hierarchyOrderFor('team', [rightEmp.organisation || 'Unassigned organisation', rightEmp.department || 'Unassigned department', rightSection, rightEmp.process || 'Unassigned process'], rightEmp.team || 'Unassigned team');
-  return leftTeamOrder - rightTeamOrder || leftPersonnelOrder - rightPersonnelOrder || String(leftEmp.team || '').localeCompare(String(rightEmp.team || ''), 'nb', { sensitivity: 'base' });
+  const teamComparison = compareHierarchyAssignment(leftEmp.team, rightEmp.team) || leftTeamOrder - rightTeamOrder || String(leftEmp.team || '').localeCompare(String(rightEmp.team || ''), 'nb', { sensitivity: 'base' });
+  if (teamComparison) return teamComparison;
+  const leftPersonnelOrder = Math.min(...(left.emps || []).map(employee => Number(employee.sortOrder) || 9999));
+  const rightPersonnelOrder = Math.min(...(right.emps || []).map(employee => Number(employee.sortOrder) || 9999));
+  return leftPersonnelOrder - rightPersonnelOrder || String(leftEmp.team || '').localeCompare(String(rightEmp.team || ''), 'nb', { sensitivity: 'base' });
 }
 function resolveSubdepartmentColor(dept, subdept) {
   const key = subdepartmentColorKey(dept, subdept);
@@ -4136,19 +4148,19 @@ function employeeHierarchyLeaf(employee) {
   return [employee?.section, employee?.process, employee?.team].filter(Boolean).join(' / ');
 }
 function comparePersonnelHierarchy(left, right) {
-  const organisationComparison = String(left?.organisation || '').localeCompare(String(right?.organisation || ''), 'nb', { sensitivity: 'base' });
+  const organisationComparison = compareHierarchyAssignment(left?.organisation, right?.organisation) || String(left?.organisation || '').localeCompare(String(right?.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
   const leftDepartment = left?.department || 'Unassigned department';
   const rightDepartment = right?.department || 'Unassigned department';
-  const departmentComparison = hierarchyOrderFor('department', [left?.organisation || 'Unassigned organisation'], leftDepartment) - hierarchyOrderFor('department', [right?.organisation || 'Unassigned organisation'], rightDepartment);
+  const departmentComparison = compareAssignedHierarchyValues('department', [left?.organisation || 'Unassigned organisation'], leftDepartment, rightDepartment);
   if (departmentComparison) return departmentComparison;
   const leftSection = left?.section || left?.subdepartment || 'Unassigned section';
   const rightSection = right?.section || right?.subdepartment || 'Unassigned section';
-  const sectionComparison = hierarchyOrderFor('section', [left?.organisation || 'Unassigned organisation', leftDepartment], leftSection) - hierarchyOrderFor('section', [right?.organisation || 'Unassigned organisation', rightDepartment], rightSection);
+  const sectionComparison = compareAssignedHierarchyValues('section', [left?.organisation || 'Unassigned organisation', leftDepartment], leftSection, rightSection);
   if (sectionComparison) return sectionComparison;
-  const processComparison = hierarchyOrderFor('process', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection], left?.process || 'Unassigned process') - hierarchyOrderFor('process', [right?.organisation || 'Unassigned organisation', rightDepartment, rightSection], right?.process || 'Unassigned process');
+  const processComparison = compareAssignedHierarchyValues('process', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection], left?.process, right?.process);
   if (processComparison) return processComparison;
-  const teamComparison = hierarchyOrderFor('team', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection, left?.process || 'Unassigned process'], left?.team || 'Unassigned team') - hierarchyOrderFor('team', [right?.organisation || 'Unassigned organisation', rightDepartment, rightSection, right?.process || 'Unassigned process'], right?.team || 'Unassigned team');
+  const teamComparison = compareAssignedHierarchyValues('team', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection, left?.process || 'Unassigned process'], left?.team, right?.team);
   if (teamComparison) return teamComparison;
   return ((left?.sortOrder ?? 9999) - (right?.sortOrder ?? 9999)) ||
     String(left?.name || '').localeCompare(String(right?.name || ''), 'nb', { sensitivity: 'base' });

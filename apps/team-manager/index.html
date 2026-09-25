@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=28">
+<link rel="stylesheet" href="css/styles.css?v=29">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -457,7 +457,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
 
 <!-- Settings modal -->
 <div class="modal-bg" id="settings-modal">
-  <div class="modal" style="width:560px">
+  <div class="modal settings-modal-main">
     <h3>Application settings</h3>
     <p class="modal-desc">Customise the organisation name and working-hours configuration.</p>
     <div class="form-row"><label>Administration</label><button class="btn" type="button" onclick="openAdministrationSettings()">Open Administration settings</button><div class="form-hint">Boss View, audit information, and protected maintenance tools.</div></div>
@@ -479,7 +479,12 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row">
       <label>Workwheel</label>
       <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer"><input id="set-workwheel-enabled" type="checkbox"> Enable Workwheel</label>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;margin-top:8px"><div><label class="muted text-sm">Workwheel upcoming window (days)</label><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"></div><div><label class="muted text-sm">My schedule lookahead (days)</label><input id="set-my-schedule-lookahead-days" type="number" min="1" max="365" step="1" value="31"><span class="form-hint">Default: one month.</span></div><div><label class="muted text-sm">Schedule display</label><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option></select><span class="form-hint">Controls how Workwheel events appear in Schedule.</span></div><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div>
+      <div class="workwheel-settings-grid">
+        <label class="workwheel-setting-field"><span>Workwheel upcoming window (days)</span><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"><small>Upcoming panel range.</small></label>
+        <label class="workwheel-setting-field"><span>My schedule lookahead (days)</span><input id="set-my-schedule-lookahead-days" type="number" min="1" max="365" step="1" value="31"><small>Default: one month.</small></label>
+        <label class="workwheel-setting-field"><span>Schedule display</span><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option></select><small>Controls where Workwheel events appear in Schedule.</small></label>
+        <div class="workwheel-setting-action"><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div>
+      </div>
       <div class="form-hint">Experimental section activity wheels. Data is kept in a separate local JSON file.</div>
     </div>
     <div class="form-row">
@@ -496,6 +501,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <label>About</label>
       <div class="form-hint" id="set-about-version"></div>
     </div>
+    <div class="settings-copyright">Created by rSoft · Copyright © <span data-copyright-year></span></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('settings-modal')">Cancel</button>
       <button class="btn btn-primary" onclick="saveSettings()">Save</button>

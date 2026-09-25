@@ -53,7 +53,7 @@ function scheduleMarkup(state: PlannerDocument): string {
   const today = new Date();
   const days = Array.from({ length: scheduleDays }, (_, index) => addDays(today, scheduleOffset * scheduleDays + index));
   const activities = state.activities.filter((activity) => activity.startDate && activity.endDate && (scheduleActivityFilter === 'all' || activity.status === scheduleActivityFilter));
-  const employees = state.employees.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  const employees = state.employees.slice().sort(compareScheduleEmployees);
   const visibleEmployees = scheduleSection === 'All sections' ? employees : employees.filter((employee) => (employee.section || 'Unassigned') === scheduleSection);
   const grouped = new Map<string, typeof employees>();
   for (const employee of visibleEmployees) {
@@ -71,6 +71,22 @@ function scheduleMarkup(state: PlannerDocument): string {
 
 function employeeRow(employee: PlannerDocument['employees'][number], days: Date[], state: PlannerDocument): string {
   return `<div class="tm-grid-row tm-employee-row"><div class="tm-person-cell"><span class="avatar">${initials(employee.name)}</span><span><strong>${escapeHtml(employee.name || 'Unnamed')}</strong><small>${escapeHtml([employee.section, employee.role].filter(Boolean).join(' · '))}</small></span></div>${days.map((day) => { const date = dateKey(day); const key = `${employee.id}_${date}`; const entry = state.entriesMap[key]; const status = typeof entry === 'string' ? entry : entry && typeof entry === 'object' && 'status' in entry ? String(entry.status) : ''; const selected = selectedCells.has(key); return `<button class="tm-day-cell tm-status-cell${status ? ' filled' : ''}${selected ? ' selected' : ''}" data-cell="${employee.id}:${date}" title="${escapeHtml(status || 'Edit status')}">${escapeHtml(status || '')}</button>`; }).join('')}</div>`;
+}
+
+function compareScheduleEmployees(left: PlannerDocument['employees'][number], right: PlannerDocument['employees'][number]): number {
+  const hierarchyFields: (keyof PlannerDocument['employees'][number])[] = ['organisation', 'department', 'section', 'process', 'team'];
+  for (const field of hierarchyFields) {
+    const leftValue = String(left[field] ?? '').trim();
+    const rightValue = String(right[field] ?? '').trim();
+    const leftUnassigned = !leftValue || /^unassigned(?:\s|$)/i.test(leftValue);
+    const rightUnassigned = !rightValue || /^unassigned(?:\s|$)/i.test(rightValue);
+    if (leftUnassigned !== rightUnassigned) return leftUnassigned ? -1 : 1;
+    if (!leftUnassigned) {
+      const comparison = leftValue.localeCompare(rightValue, 'nb', { sensitivity: 'base' });
+      if (comparison) return comparison;
+    }
+  }
+  return left.sortOrder - right.sortOrder || left.name.localeCompare(right.name, 'nb', { sensitivity: 'base' });
 }
 
 function statusPicker(state: PlannerDocument, selection: { employeeId: number; date: string }): string {
