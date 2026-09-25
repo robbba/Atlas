@@ -8680,24 +8680,20 @@ function renderDashboard() {
   const counts = {};
   statuses.forEach(s => { counts[s.key] = 0; });
   let availableToday = 0;
-  let availablePartialHours = 0;
   let oooToday = 0;
   let absentToday = 0;
-  let absentPartialHours = 0;
   const unavailableTodayPeople = [];
   for (const emp of employees) {
     const entry = getEntryObj(`${emp.id}_${today}`);
     if (entry && counts[entry.status] !== undefined) counts[entry.status]++;
     const status = entry ? siFor(entry.status) : null;
     const unavailableActivity = unavailableActivityFor(emp.id, today);
-    const statusUnavailable = status && (status.isAbsence || status.isOutOfOffice);
+    const statusUnavailable = status && !statusEntryIsPlanned(entry) && (status.isAbsence || status.isOutOfOffice);
     const isPartial = entry?.durationType === 'time';
     const partialHours = isPartial && entry?.time ? (timeRangeHours(entry.time) ?? 0) : 0;
     const coreHours = appSettings.coreHoursPerDay || 7.5;
-    const availableHours = isPartial ? Math.max(0, coreHours - partialHours) : (statusUnavailable ? 0 : coreHours);
     if (!statusUnavailable && !unavailableActivity) {
       availableToday += isPartial ? 0 : 1;
-      availablePartialHours += isPartial ? availableHours : 0;
     }
     if (statusUnavailable) {
       unavailableTodayPeople.push({ name: emp.name, status: isPartial ? `${status.label} (${partialHours}h)` : status.label });
@@ -8706,50 +8702,52 @@ function renderDashboard() {
       const workCode = (appSettings.workCodes || []).find(code => code.id === assignment.workCodeId);
       unavailableTodayPeople.push({ name: emp.name, status: `${workCode?.name || 'Activity'} · ${unavailableActivity.name}` });
     }
-    if ((status && status.isOutOfOffice) || (!statusUnavailable && unavailableActivity)) oooToday++;
-    if (status && status.isAbsence) {
+    if ((statusUnavailable && status.isOutOfOffice) || (!statusUnavailable && unavailableActivity)) oooToday++;
+    if (statusUnavailable && status.isAbsence) {
       absentToday += isPartial ? 0 : 1;
-      absentPartialHours += isPartial ? partialHours : 0;
     }
   }
-  const totalAvailableHours = availableToday * (appSettings.coreHoursPerDay || 7.5) + availablePartialHours;
-  const totalCoreHours = employees.length * (appSettings.coreHoursPerDay || 7.5);
-  const availableDisplay = totalCoreHours > 0 ? (totalAvailableHours / totalCoreHours * 100).toFixed(0) + '%' : '0%';
-  const availableDetail = availablePartialHours > 0 ? ` (${availableToday} full + ${availablePartialHours.toFixed(1)}h partial)` : ` (${availableToday})`;
   const unavailableTodayInline = unavailableTodayPeople.length
     ? `Unavailable today: ${unavailableTodayPeople.map(item => `${item.name} (${item.status})`).join(', ')}`
     : 'Everyone is available today.';
 
   const trendDays = [];
   for (let i = 0; i < 14; i++) { const d = new Date(); d.setDate(d.getDate() + i); trendDays.push(d); }
-  const totalEmployees = employees.length || 1;
-  const coreHours = appSettings.coreHoursPerDay || 7.5;
+  const totalEmployees = employees.length;
   const trendData = trendDays.map(d => {
     const ds = fmt(d), dayCounts = {};
     let assignmentUnavailable = 0;
     let partialAbsenceHours = 0;
+    let unavailableStatusCount = 0;
+    let outOfOfficeStatusCount = 0;
+    let absenceStatusCount = 0;
     statuses.forEach(s => { dayCounts[s.key] = 0; });
     for (const emp of employees) {
       const entry = getEntryObj(`${emp.id}_${ds}`);
-      if (entry && dayCounts[entry.status] !== undefined) dayCounts[entry.status]++;
       const status = entry ? siFor(entry.status) : null;
-      if ((!status || (!status.isAbsence && !status.isOutOfOffice)) && unavailableActivityFor(emp.id, ds)) assignmentUnavailable++;
-      if (entry?.durationType === 'time' && status?.isAbsence) {
+      const statusAffectsAvailability = !!status && !statusEntryIsPlanned(entry) && (status.isAbsence || status.isOutOfOffice);
+      if (status && !statusEntryIsPlanned(entry) && dayCounts[entry.status] !== undefined) dayCounts[entry.status]++;
+      if (statusAffectsAvailability) {
+        unavailableStatusCount++;
+        if (status.isOutOfOffice) outOfOfficeStatusCount++;
+        if (status.isAbsence) absenceStatusCount++;
+      }
+      else if (unavailableActivityFor(emp.id, ds)) assignmentUnavailable++;
+      if (entry?.durationType === 'time' && status?.isAbsence && !statusEntryIsPlanned(entry)) {
         partialAbsenceHours += timeRangeHours(entry.time) ?? 0;
       }
     }
-    const unavailableStatusKeys = statuses.filter(s => s.isAbsence || s.isOutOfOffice).map(s => s.key);
-    const unavailable = unavailableStatusKeys.reduce((sum, key) => sum + (dayCounts[key] || 0), 0) + assignmentUnavailable;
+    const unavailable = unavailableStatusCount + assignmentUnavailable;
     const available = Math.max(0, totalEmployees - unavailable);
-    const availableHours = available * coreHours + Math.max(0, (totalEmployees * coreHours - partialAbsenceHours - unavailable * coreHours));
     return {
       date: d,
       ds,
       counts: dayCounts,
       total: Object.values(dayCounts).reduce((a, b) => a + b, 0),
       available,
-      availableHours,
       unavailable,
+      outOfOfficeStatusCount,
+      absenceStatusCount,
       partialAbsenceHours,
       assignmentUnavailable,
     };
@@ -8909,16 +8907,17 @@ function renderDashboard() {
               if (c > 0) segs.push(`<div class="trend-seg" style="height:${(c / trendMax) * 100}%;background:${s.color}"></div>`);
             });
             if (t.assignmentUnavailable > 0) segs.push(`<div class="trend-seg" style="height:${(t.assignmentUnavailable / trendMax) * 100}%;background:#0ea5e9"></div>`);
-            const availableHours = t.availableHours || (t.available * coreHours);
             const tipLines = [
-              `<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:#22c55e;margin-right:4px"></span>Available: <b>${t.available} (${availableHours.toFixed(1)}h)</b></div>`
+              `<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:#22c55e;margin-right:4px"></span>Available: <b>${t.available} ${t.available === 1 ? 'person' : 'persons'}</b></div>`
             ];
-            unavailableStatuses.filter(s => (t.counts[s.key] || 0) > 0).forEach(s => {
-              tipLines.push(`<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${s.color};margin-right:4px"></span>${esc(s.label)}: <b>${t.counts[s.key]}</b></div>`);
+            unavailableStatuses.forEach(s => {
+              const count = s.isAbsence ? t.absenceStatusCount : (s.isOutOfOffice ? t.outOfOfficeStatusCount : 0);
+              if (!count) return;
+              tipLines.push(`<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${s.color};margin-right:4px"></span>${esc(s.label)}: <b>${count}</b></div>`);
             });
             if (t.partialAbsenceHours > 0) tipLines.push(`<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:#f59e0b;margin-right:4px"></span>Partial absence: <b>${t.partialAbsenceHours.toFixed(1)}h</b></div>`);
             if (t.assignmentUnavailable > 0) tipLines.push(`<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:#0ea5e9;margin-right:4px"></span>Assigned elsewhere: <b>${t.assignmentUnavailable}</b></div>`);
-            const tip = tipLines.join('') || '<div class="muted">No status entries</div>';
+            const tip = tipLines.join('');
             const isTodayCol = t.ds === today;
             return `<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;min-width:0;height:240px;${isTodayCol ? 'background:color-mix(in srgb, var(--accent-blue) 8%, transparent);border:1px solid color-mix(in srgb, var(--accent-blue) 45%, transparent);border-radius:6px;padding:2px 2px 0;' : ''}">
               <div class="trend-col">${segs.join('')}<div class="trend-tip"><b>${t.date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</b>${tip}</div></div>
@@ -9530,16 +9529,20 @@ function renderSummary() {
   const graphRows = [...rows].map(row => ({ row, value: graphMetric ? (graphMetric.measure(row)[summaryGraphMeasure] || 0) : 0 }))
     .sort((a, b) => (summaryGraphDir === 'asc' ? a.value - b.value : b.value - a.value) || peopleOrder(a.row, b.row));
   const graphMax = Math.max(1, ...graphRows.map(item => item.value));
-  const graphHtml = graphRows.length ? graphRows.map((item, index) => `
+  const graphHasValues = graphRows.some(item => item.value > 0);
+  const graphHtml = graphRows.length && graphHasValues ? graphRows.map((item, index) => `
     <div class="sum-rank-row">
       <div class="sum-rank-num">${index + 1}</div>
       <div class="sum-rank-person"><b>${esc(item.row.emp.name)}</b><span>${esc(item.row.emp.department || 'No team')}</span></div>
-      <div class="sum-rank-track"><div class="sum-rank-fill" style="width:${Math.max(item.value ? 2 : 0, item.value / graphMax * 100)}%;background:${graphMetric.color}"></div></div>
+      <div class="sum-rank-track"><div class="sum-rank-fill" style="width:${item.value > 0 ? Math.max(2, item.value / graphMax * 100) : 0}%;background:${graphMetric.color}"></div></div>
       <div class="sum-rank-value">${formatHoursNumber(item.value)} ${summaryGraphMeasure === 'days' ? 'd' : 'h'}</div>
     </div>`).join('') : '<div class="empty-note">No employees available for this period.</div>';
+  const graphContent = graphRows.length && !graphHasValues
+    ? `<div class="empty-note">No ${summaryGraphMeasure === 'days' ? 'day' : 'hour'} values for ${esc(graphMetric?.label || 'this metric')} in this period. Try the other unit.</div>`
+    : graphHtml;
   const graphControls = `<div class="sum-graph-controls">
-    <label>Metric <select class="plain-select" onchange="setSummaryGraphOption('metric',this.value)">${graphMetricOptions.map(item => `<option value="${esc(item.key)}" ${item.key === summaryGraphMetric ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
-    <label>Unit <select class="plain-select" onchange="setSummaryGraphOption('measure',this.value)"><option value="days" ${summaryGraphMeasure === 'days' ? 'selected' : ''}>Days</option><option value="hours" ${summaryGraphMeasure === 'hours' ? 'selected' : ''}>Hours</option></select></label>
+    <label>Metric <select class="plain-select" aria-label="Graph metric" onchange="setSummaryGraphOption('metric',this.value)">${graphMetricOptions.map(item => `<option value="${esc(item.key)}" ${item.key === summaryGraphMetric ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
+    <label>Unit <select class="plain-select" aria-label="Graph unit; full-day counts and hours are kept separate" onchange="setSummaryGraphOption('measure',this.value)"><option value="days" ${summaryGraphMeasure === 'days' ? 'selected' : ''}>Days (full-day units)</option><option value="hours" ${summaryGraphMeasure === 'hours' ? 'selected' : ''}>Hours (timed)</option></select></label>
     <label>Order <select class="plain-select" onchange="setSummaryGraphOption('direction',this.value)"><option value="desc" ${summaryGraphDir === 'desc' ? 'selected' : ''}>Highest first</option><option value="asc" ${summaryGraphDir === 'asc' ? 'selected' : ''}>Lowest first</option></select></label>
   </div>`;
   document.getElementById('content').innerHTML = `
@@ -9565,7 +9568,7 @@ function renderSummary() {
         <button class="btn btn-icon" onclick="shiftSummaryPeriod(1)" aria-label="Next period">${svgIcon('chevronRight')}</button>
       </div>
     </div>
-    ${summaryViewMode === 'graph' ? `${graphControls}<div class="sum-graph">${graphHtml}</div>` : `<div class="sum-wrap">
+    ${summaryViewMode === 'graph' ? `${graphControls}<div class="sum-graph">${graphContent}</div>` : `<div class="sum-wrap">
       <table class="sum-table">
         <thead>${headHtml}</thead>
         <tbody>${bodyHtml}</tbody>

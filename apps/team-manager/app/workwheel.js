@@ -171,11 +171,17 @@ function workwheelRecurrenceLabel(recurrence) {
 function workwheelOccurrences(activity, from, to) {
   const result = [], start = new Date(`${activity.date}T00:00:00`), limit = new Date(`${to}T00:00:00`);
   if (Number.isNaN(start.getTime())) return result;
-  for (const cursor = new Date(start); cursor <= limit; cursor.setDate(cursor.getDate() + 1)) {
+  for (let cursor = new Date(start); cursor <= limit; cursor.setDate(cursor.getDate() + 1)) {
     const date = workwheelLocalDate(cursor);
-    if (date < from || (activity.recurrence === 'none' && activity.endDate && date > activity.endDate)) continue;
+    if (date < from || (activity.endDate && date > activity.endDate)) continue;
     const elapsed = Math.round((cursor - start) / 86400000);
-    const matches = activity.recurrence === 'daily' || (activity.recurrence === 'weekly' && elapsed % 7 === 0) || (activity.recurrence === 'fortnightly' && elapsed % 14 === 0) || (activity.recurrence === 'monthly' && cursor.getDate() === start.getDate()) || (activity.recurrence === 'none' && date === activity.date);
+    const weekday = Number.isInteger(activity.weekday) && activity.weekday >= 0 && activity.weekday <= 6 ? activity.weekday : start.getDay();
+    const firstWeekdayOffset = (weekday - start.getDay() + 7) % 7;
+    const matches = activity.recurrence === 'daily'
+      || (activity.recurrence === 'weekly' && elapsed >= firstWeekdayOffset && (elapsed - firstWeekdayOffset) % 7 === 0)
+      || (activity.recurrence === 'fortnightly' && elapsed >= firstWeekdayOffset && (elapsed - firstWeekdayOffset) % 14 === 0)
+      || (activity.recurrence === 'monthly' && cursor.getDate() === start.getDate())
+      || (activity.recurrence === 'none' && date === activity.date);
     if (matches) result.push({ ...activity, occurrenceDate: date });
   }
   return result;
