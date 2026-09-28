@@ -29,6 +29,7 @@ export interface AuthUserRecord extends AtlasUserRecord {
 
 export interface UserPreferencesRecord {
   readonly jumpToTodayOnGridChange: boolean;
+  readonly autoActivityPageOnHorizontalScroll: boolean;
   readonly darkMode: boolean;
   readonly zoom: number;
   readonly colleagueChangeNotificationsEnabled: boolean;
@@ -468,17 +469,17 @@ export function openDatabase(options: DatabaseOptions = {}): AtlasDatabase {
       return selectUser.get(userId) as AuthUserRecord;
     },
     getUserPreferences: (userId) => {
-      const row = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
+      const row = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, auto_activity_page_on_horizontal_scroll AS autoActivityPageOnHorizontalScroll, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
       let colleagueChangeUserIds: string[] = [];
       try { colleagueChangeUserIds = row?.colleagueChangeUserIds ? JSON.parse(row.colleagueChangeUserIds).filter((id: unknown): id is string => typeof id === 'string') : []; } catch { colleagueChangeUserIds = []; }
-      return row ? { ...row, colleagueChangeNotificationsEnabled: Boolean(row.colleagueChangeNotificationsEnabled), colleagueChangeUserIds } as UserPreferencesRecord : { jumpToTodayOnGridChange: true, darkMode: false, zoom: 100, colleagueChangeNotificationsEnabled: false, colleagueChangeUserIds };
+      return row ? { ...row, autoActivityPageOnHorizontalScroll: row.autoActivityPageOnHorizontalScroll !== false, colleagueChangeNotificationsEnabled: Boolean(row.colleagueChangeNotificationsEnabled), colleagueChangeUserIds } as UserPreferencesRecord : { jumpToTodayOnGridChange: true, autoActivityPageOnHorizontalScroll: true, darkMode: false, zoom: 100, colleagueChangeNotificationsEnabled: false, colleagueChangeUserIds };
     },
     updateUserPreferences: (userId, changes) => {
-      const current = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
+      const current = database.prepare(`SELECT jump_to_today_on_grid_change AS jumpToTodayOnGridChange, auto_activity_page_on_horizontal_scroll AS autoActivityPageOnHorizontalScroll, dark_mode AS darkMode, zoom, colleague_change_notifications_enabled AS colleagueChangeNotificationsEnabled, colleague_change_user_ids AS colleagueChangeUserIds FROM user_preferences WHERE user_id = ?`).get(userId) as (Omit<UserPreferencesRecord, 'colleagueChangeUserIds'> & { colleagueChangeUserIds?: string }) | undefined;
       let currentUserIds: string[] = [];
       try { currentUserIds = current?.colleagueChangeUserIds ? JSON.parse(current.colleagueChangeUserIds).filter((id: unknown): id is string => typeof id === 'string') : []; } catch { currentUserIds = []; }
-      const next = { jumpToTodayOnGridChange: changes.jumpToTodayOnGridChange ?? current?.jumpToTodayOnGridChange ?? true, darkMode: changes.darkMode ?? current?.darkMode ?? false, zoom: changes.zoom ?? current?.zoom ?? 100, colleagueChangeNotificationsEnabled: changes.colleagueChangeNotificationsEnabled ?? Boolean(current?.colleagueChangeNotificationsEnabled), colleagueChangeUserIds: changes.colleagueChangeUserIds ?? currentUserIds };
-      database.prepare(`INSERT INTO user_preferences (user_id, jump_to_today_on_grid_change, dark_mode, zoom, colleague_change_notifications_enabled, colleague_change_user_ids) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET jump_to_today_on_grid_change=excluded.jump_to_today_on_grid_change, dark_mode=excluded.dark_mode, zoom=excluded.zoom, colleague_change_notifications_enabled=excluded.colleague_change_notifications_enabled, colleague_change_user_ids=excluded.colleague_change_user_ids`).run(userId, next.jumpToTodayOnGridChange ? 1 : 0, next.darkMode ? 1 : 0, next.zoom, next.colleagueChangeNotificationsEnabled ? 1 : 0, JSON.stringify([...new Set(next.colleagueChangeUserIds)]));
+      const next = { jumpToTodayOnGridChange: changes.jumpToTodayOnGridChange ?? current?.jumpToTodayOnGridChange ?? true, autoActivityPageOnHorizontalScroll: changes.autoActivityPageOnHorizontalScroll ?? current?.autoActivityPageOnHorizontalScroll ?? true, darkMode: changes.darkMode ?? current?.darkMode ?? false, zoom: changes.zoom ?? current?.zoom ?? 100, colleagueChangeNotificationsEnabled: changes.colleagueChangeNotificationsEnabled ?? Boolean(current?.colleagueChangeNotificationsEnabled), colleagueChangeUserIds: changes.colleagueChangeUserIds ?? currentUserIds };
+      database.prepare(`INSERT INTO user_preferences (user_id, jump_to_today_on_grid_change, auto_activity_page_on_horizontal_scroll, dark_mode, zoom, colleague_change_notifications_enabled, colleague_change_user_ids) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET jump_to_today_on_grid_change=excluded.jump_to_today_on_grid_change, auto_activity_page_on_horizontal_scroll=excluded.auto_activity_page_on_horizontal_scroll, dark_mode=excluded.dark_mode, zoom=excluded.zoom, colleague_change_notifications_enabled=excluded.colleague_change_notifications_enabled, colleague_change_user_ids=excluded.colleague_change_user_ids`).run(userId, next.jumpToTodayOnGridChange ? 1 : 0, next.autoActivityPageOnHorizontalScroll ? 1 : 0, next.darkMode ? 1 : 0, next.zoom, next.colleagueChangeNotificationsEnabled ? 1 : 0, JSON.stringify([...new Set(next.colleagueChangeUserIds)]));
       return next;
     },
     factoryReset: () => {
@@ -782,6 +783,12 @@ function migrate(database: Database.Database): void {
     database.transaction(() => {
       database.exec(`ALTER TABLE installation_settings ADD COLUMN organization_name TEXT NOT NULL DEFAULT 'Organisation'; ALTER TABLE installation_settings ADD COLUMN organization_slug TEXT NOT NULL DEFAULT 'default'; ALTER TABLE installation_settings ADD COLUMN multisite_enabled INTEGER NOT NULL DEFAULT 0 CHECK (multisite_enabled IN (0,1));`);
       database.prepare(`INSERT INTO schema_migrations (version) VALUES (17)`).run();
+    })();
+  }
+  if (database.prepare('SELECT 1 FROM schema_migrations WHERE version = 18').get() === undefined) {
+    database.transaction(() => {
+      database.exec(`ALTER TABLE user_preferences ADD COLUMN auto_activity_page_on_horizontal_scroll INTEGER NOT NULL DEFAULT 1 CHECK (auto_activity_page_on_horizontal_scroll IN (0,1));`);
+      database.prepare(`INSERT INTO schema_migrations (version) VALUES (18)`).run();
     })();
   }
 }

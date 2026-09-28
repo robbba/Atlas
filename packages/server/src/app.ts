@@ -88,7 +88,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const session = requireRole(request, reply, ['admin', 'planner', 'viewer']);
     return session ? { user: { ...publicUser(options.database.getUserById(session.userId)!), preferences: options.database.getUserPreferences(session.userId), availableUsers: options.database.listUsers().filter(user => user.id !== session.userId).map(publicUser) }, installation: options.database.getInstallationSettings(), operationalChecksEnabled: options.database.getOperationalChecksEnabled(), expiresAt: session.expiresAt } : undefined;
   });
-  app.patch<{ Body: { name?: string; email?: string; password?: string; preferences?: { jumpToTodayOnGridChange?: boolean; darkMode?: boolean; zoom?: number; colleagueChangeNotificationsEnabled?: boolean; colleagueChangeUserIds?: string[] } } }>('/api/me/profile', async (request, reply) => {
+  app.patch<{ Body: { name?: string; email?: string; password?: string; preferences?: { jumpToTodayOnGridChange?: boolean; autoActivityPageOnHorizontalScroll?: boolean; darkMode?: boolean; zoom?: number; colleagueChangeNotificationsEnabled?: boolean; colleagueChangeUserIds?: string[] } } }>('/api/me/profile', async (request, reply) => {
     const actor = requireRole(request, reply, ['admin', 'planner', 'viewer']);
     if (!actor) return;
     const body = request.body ?? {};
@@ -125,6 +125,55 @@ export function buildApp(options: AppOptions): FastifyInstance {
     if (!actor) return;
     if (!request.body?.document || typeof request.body.expectedRevision !== 'number') return reply.code(400).send({ error: 'document and expectedRevision are required' });
     try {
+      const current = options.database.getWorkwheel();
+      const previousDocument = current.document as { wheels?: Array<Record<string, unknown>>; activities?: Array<Record<string, unknown>> };
+      const nextDocument = request.body.document as { wheels?: Array<Record<string, unknown>>; activities?: Array<Record<string, unknown>> };
+      if (actor.role !== 'admin') {
+        const previousWheels = new Map((previousDocument.wheels ?? []).map(wheel => [String(wheel.id), wheel]));
+        const nextWheels = new Map((nextDocument.wheels ?? []).map(wheel => [String(wheel.id), wheel]));
+        const editable = (wheel: Record<string, unknown> | undefined) => Boolean(wheel && (String(wheel.ownerUserId || '') === actor.userId || (Array.isArray(wheel.editorUserIds) && wheel.editorUserIds.map(String).includes(actor.userId))));
+        const editableAfterUpdate = (id: string) => editable(previousWheels.get(id)) || (!previousWheels.has(id) && String(nextWheels.get(id)?.ownerUserId || '') === actor.userId);
+        for (const [id, wheel] of nextWheels) {
+          const existing = previousWheels.get(id);
+          if (existing && JSON.stringify(existing) === JSON.stringify(wheel)) continue;
+          if (existing ? !editable(existing) : String(wheel.ownerUserId || '') !== actor.userId) return reply.code(403).send({ error: 'You can only change Workwheels you own or can edit.' });
+          if (existing) {
+            const existingOwner = String(existing.ownerUserId || '');
+            const nextOwner = String(wheel.ownerUserId || '');
+            const existingEditors = Array.isArray(existing.editorUserIds) ? [...existing.editorUserIds].map(String).sort() : [];
+            const nextEditors = Array.isArray(wheel.editorUserIds) ? [...wheel.editorUserIds].map(String).sort() : [];
+            if (existingOwner !== nextOwner || (existingOwner !== actor.userId && JSON.stringify(existingEditors) !== JSON.stringify(nextEditors))) return reply.code(403).send({ error: 'Only an administrator can transfer Workwheel ownership; only the owner can manage editors.' });
+          }
+        }
+        for (const [id, wheel] of previousWheels) {
+          if (!nextWheels.has(id) && !editable(wheel)) return reply.code(403).send({ error: 'You can only delete Workwheels you own or can edit.' });
+        }
+        const previousActivities = new Map((previousDocument.activities ?? []).map(activity => [String(activity.id), activity]));
+        const nextActivities = new Map((nextDocument.activities ?? []).map(activity => [String(activity.id), activity]));
+        for (const [id, activity] of nextActivities) {
+          const existing = previousActivities.get(id);
+          if (existing && JSON.stringify(existing) === JSON.stringify(activity)) continue;
+          const sourceWheelId = String(existing?.wheelId || activity.wheelId || '');
+          const targetWheelId = String(activity.wheelId || '');
+          if (!editableAfterUpdate(sourceWheelId) || !editableAfterUpdate(targetWheelId)) return reply.code(403).send({ error: 'You can only change activities in Workwheels you own or can edit.' });
+        }
+        const previousTemplates = new Map((((previousDocument as Record<string, unknown>).availableActivities as Array<Record<string, unknown>>) ?? []).map(activity => [String(activity.id), activity]));
+        const nextTemplates = new Map((((nextDocument as Record<string, unknown>).availableActivities as Array<Record<string, unknown>>) ?? []).map(activity => [String(activity.id), activity]));
+        const templateEditable = (template: Record<string, unknown> | undefined) => editable(template?.wheelId ? previousWheels.get(String(template.wheelId)) : undefined)
+          || String(template?.ownerUserId || '') === actor.userId
+          || (Array.isArray(template?.editorUserIds) && template.editorUserIds.map(String).includes(actor.userId));
+        for (const [id, template] of nextTemplates) {
+          const existing = previousTemplates.get(id);
+          if (existing && JSON.stringify(existing) === JSON.stringify(template)) continue;
+          if (existing ? !templateEditable(existing) : !(editable(nextWheels.get(String(template.wheelId || ''))) || String(template.ownerUserId || '') === actor.userId)) return reply.code(403).send({ error: 'You can only change templates you own or that are associated with a Workwheel you can edit.' });
+        }
+        for (const [id, template] of previousTemplates) {
+          if (!nextTemplates.has(id) && !templateEditable(template)) return reply.code(403).send({ error: 'You can only delete templates you own or that are associated with a Workwheel you can edit.' });
+        }
+        for (const [id, activity] of previousActivities) {
+          if (!nextActivities.has(id) && !editable(previousWheels.get(String(activity.wheelId || '')))) return reply.code(403).send({ error: 'You can only delete activities in Workwheels you own or can edit.' });
+        }
+      }
       const saved = options.database.saveWorkwheel(request.body.document, request.body.expectedRevision);
       options.database.writeAuditLog({ userId: actor.userId, action: 'workwheel.updated', target: 'workwheel/default' });
       return saved;
@@ -460,6 +509,11 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const workwheel = options.database.getWorkwheel().document as { activities?: Array<Record<string, unknown>>; wheels?: Array<Record<string, unknown>> };
     const activity = (workwheel.activities ?? []).find(item => String(item.id) === String(request.body?.workwheelActivityId));
     if (!activity) return reply.code(404).send({ error: 'Workwheel activity not found' });
+    if (actor.role !== 'admin') {
+      const wheel = (workwheel.wheels ?? []).find(item => String(item.id) === String(activity.wheelId));
+      const canEdit = wheel && (String(wheel.ownerUserId || '') === actor.userId || (Array.isArray(wheel.editorUserIds) && wheel.editorUserIds.map(String).includes(actor.userId)));
+      if (!canEdit) return reply.code(403).send({ error: 'You can only publish activities from a Workwheel you own or can edit.' });
+    }
     const planner = options.database.getPlanner();
     const linkedIdValue = activity.linkedScheduleActivityId;
     const linkedId = linkedIdValue === null || linkedIdValue === undefined ? null : Number(linkedIdValue);

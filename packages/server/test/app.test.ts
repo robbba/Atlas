@@ -53,6 +53,84 @@ test('hosted setup, login, and protected planner access', async () => {
   }
 });
 
+test('Workwheel data is shared, revisioned, and restricted to wheel editors', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'atlas-workwheel-'));
+  const database = openDatabase({ filename: join(directory, 'atlas.db') });
+  const app = buildApp({ database });
+  try {
+    const setup = await app.inject({
+      method: 'POST', url: '/api/setup/create-admin',
+      payload: { name: 'Admin User', username: 'admin', email: 'admin@example.test', password: 'correct horse battery staple' },
+    });
+    const adminCookie = setup.headers['set-cookie']!.toString().split(';')[0];
+    const planner = database.createUser({ name: 'Wheel Owner', username: 'owner', email: 'owner@example.test', password: 'another correct password', role: 'planner' });
+    const viewer = database.createUser({ name: 'Reader', username: 'reader', email: 'reader@example.test', password: 'reader correct password', role: 'viewer' });
+    const ownerLogin = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'owner', password: 'another correct password' } });
+    const ownerCookie = ownerLogin.headers['set-cookie']!.toString().split(';')[0];
+    const viewerLogin = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'reader', password: 'reader correct password' } });
+    const viewerCookie = viewerLogin.headers['set-cookie']!.toString().split(';')[0];
+
+    const initial = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: adminCookie },
+      payload: { expectedRevision: 1, document: { version: 1, wheels: [{ id: 'wheel-owned', name: 'JDLOC', section: 'JDLOC', ownerUserId: planner.id, editorUserIds: [] }], activities: [], availableActivities: [] } },
+    });
+    assert.equal(initial.statusCode, 200);
+    const sharedRead = await app.inject({ method: 'GET', url: '/api/workwheel', headers: { cookie: ownerCookie } });
+    assert.equal(sharedRead.json().document.wheels[0].name, 'JDLOC');
+
+    const ownerSave = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: ownerCookie },
+      payload: { expectedRevision: sharedRead.json().revision, document: { ...sharedRead.json().document, activities: [{ id: 'meeting-1', wheelId: 'wheel-owned', title: 'Planning', date: '2026-09-28' }] } },
+    });
+    assert.equal(ownerSave.statusCode, 200);
+    const sharedAfterSave = await app.inject({ method: 'GET', url: '/api/workwheel', headers: { cookie: adminCookie } });
+    assert.equal(sharedAfterSave.json().document.activities[0].title, 'Planning');
+
+    const unauthorizedSave = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: ownerCookie },
+      payload: { expectedRevision: sharedAfterSave.json().revision, document: sharedAfterSave.json().document },
+    });
+    assert.equal(unauthorizedSave.statusCode, 200);
+
+    const viewerSave = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: viewerCookie },
+      payload: { expectedRevision: unauthorizedSave.json().revision, document: unauthorizedSave.json().document },
+    });
+    assert.equal(viewerSave.statusCode, 403);
+
+    const adminUpdate = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: adminCookie },
+      payload: { expectedRevision: unauthorizedSave.json().revision, document: { ...sharedAfterSave.json().document, wheels: [{ ...sharedAfterSave.json().document.wheels[0], name: 'JDLOC updated' }] } },
+    });
+    assert.equal(adminUpdate.statusCode, 200);
+    const addOtherWheel = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: adminCookie },
+      payload: { expectedRevision: adminUpdate.json().revision, document: { ...adminUpdate.json().document, wheels: [...adminUpdate.json().document.wheels, { id: 'wheel-other', name: 'Other', section: 'Other', ownerUserId: setup.json().user.id, editorUserIds: [] }] } },
+    });
+    assert.equal(addOtherWheel.statusCode, 200);
+    const ownerUpdate = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: ownerCookie },
+      payload: { expectedRevision: addOtherWheel.json().revision, document: { ...addOtherWheel.json().document, activities: [...addOtherWheel.json().document.activities, { id: 'meeting-2', wheelId: 'wheel-owned', title: 'Follow-up', date: '2026-09-29' }] } },
+    });
+    assert.equal(ownerUpdate.statusCode, 200);
+    assert.equal(ownerUpdate.json().document.wheels.length, 2);
+    const transferWheel = ownerUpdate.json().document.wheels.find((wheel: { id: string }) => wheel.id === 'wheel-owned');
+    const forbiddenTransfer = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: ownerCookie },
+      payload: { expectedRevision: ownerUpdate.json().revision, document: { ...ownerUpdate.json().document, wheels: ownerUpdate.json().document.wheels.map((wheel: { id: string; ownerUserId: string }) => wheel.id === transferWheel.id ? { ...wheel, ownerUserId: setup.json().user.id } : wheel) } },
+    });
+    assert.equal(forbiddenTransfer.statusCode, 403);
+    const staleSave = await app.inject({
+      method: 'PUT', url: '/api/workwheel', headers: { cookie: ownerCookie },
+      payload: { expectedRevision: ownerUpdate.json().revision - 1, document: ownerUpdate.json().document },
+    });
+    assert.equal(staleSave.statusCode, 409);
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('responsibility-scoped admins can change application settings', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'atlas-settings-'));
   const database = openDatabase({ filename: join(directory, 'atlas.db') });

@@ -2,7 +2,7 @@
 
 ## Workwheel prototype
 
-The optional Workwheel can be enabled from **Application settings**. It supports planning for teams, processes, sections, and other organisational units, and stores its experimental data separately from the main planner JSON. Create multiple wheels, add recurring meetings or deadlines, and use the upcoming panel to review future items.
+The optional Workwheel can be enabled from **Application settings**. It supports planning for teams, processes, sections, and other organisational units. In hosted mode, Workwheels are shared and saved in the server database; save state is shown in the Workwheel toolbar. In standalone mode, Workwheel data is included in the planner JSON and browser recovery. Create multiple wheels, add recurring meetings or deadlines, and use the upcoming panel to review future items.
 
 Workwheel data is recovered in browser storage while testing. Use **Workwheel → Data file** to load a separate JSON file or export the current Workwheel as `workwheel.json`. The feature is fully offline and does not use external services or assets. The current prototype supports none, daily, weekly, and monthly recurrence; weekly activities use the weekday of their start date.
 
@@ -68,9 +68,11 @@ Personnel receive an automatic employee order number when added. The number can 
 
 Dragging across dates creates a visible selection. **Remove from [activity]** removes only that activity from the selected dates; daily statuses and other activities remain. **Clear all selected cells** is the separate action for clearing everything in the selection. Both actions participate in Undo and browser recovery.
 
-The Schedule toolbar includes a section selector for shared workstations. Each browser stores its own selected section locally, so users can choose their own section without changing another workstation's view. The selection limits visible personnel, relevant activity rows, activity reports, and team schedule reports. Choose **All sections** to restore the complete schedule.
+The Schedule toolbar includes a **Show** selector for departments and sections. Each browser stores its own selection locally, so users can choose their own scope without changing another workstation's view. The selection limits visible personnel and activity rows. Department views include department-targeted activities and activities targeted to sections within that department; section views show activities explicitly targeted to that section. Choose **Show: All** to restore the complete schedule, including global activities.
 
-Activities can optionally be marked as relevant to one or more Departments and Sections. An activity with no relevance targets is global. An activity with targets is shown only when the selected personnel or Schedule section matches those targets.
+Employees can be marked **Temporarily inactive** in the employee editor without deleting their records, assignments, or history. They remain visible in Personnel under a collapsed **Inactive personnel** section at the bottom. In Schedule, the employee picker lets each workstation choose whether inactive personnel are greyed out or hidden; this is a local view preference and does not remove employment data.
+
+Activities can optionally be targeted to one or more Departments and Sections. Activities created while a department or section is selected inherit that scope. An activity with no targets is global and appears in **Show: All**; scoped views show only activities targeted to the selected scope.
 
 The Activities header contains separate report buttons for **Team Work Schedule** and **Activity Schedule**. Team Work Schedule opens with all activities overlapping the selected period included; individual activities can be unchecked before previewing or printing.
 

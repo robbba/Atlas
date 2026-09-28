@@ -122,13 +122,13 @@ function lsSet(key, value) {
 }
 
 // ═══ APP SETTINGS ════════════════════════════════════════════════════════════
-const APP_VERSION = '0.3.1';
+const APP_VERSION = '0.3.2';
 const DATA_VERSION = 9;
 const DEFAULT_WORK_CODES = [];
 const DEFAULT_SHIFT_TEMPLATES = [];
 const LOCAL_ONLY_APP_SETTING_KEYS = [
   'darkMode', 'autoSaveEnabled', 'autoSyncEnabled', 'showOnlyConfirmedActivities', 'workwheelGridDisplayMode',
-  'activityStatusFilter', 'jumpToTodayOnGridChange', 'specialDaysVisible',
+  'activityStatusFilter', 'jumpToTodayOnGridChange', 'autoActivityPageOnHorizontalScroll', 'specialDaysVisible',
 ];
 
 let appSettings = {
@@ -139,6 +139,7 @@ let appSettings = {
   showOnlyConfirmedActivities: false,
   activityStatusFilter: 'all',
   jumpToTodayOnGridChange: true,
+  autoActivityPageOnHorizontalScroll: true,
   showLevelRankInSchedule: true,
   coreHoursPerDay: 7.5,
   coreWorkdayRange: '0730-1500',
@@ -308,12 +309,56 @@ function activityRelevantToEmployee(activity, employee) {
   return (!relevance.departments.length || relevance.departments.includes(String(employee.department || '').trim()))
     && (!relevance.sections.length || relevance.sections.includes(employeeSection(employee)));
 }
+function scheduleScopeParts() {
+  const match = /^(department|section)::([\s\S]+)$/.exec(scheduleSectionFilter);
+  return match ? { level: match[1], value: match[2] } : scheduleSectionFilter ? { level: 'section', value: scheduleSectionFilter } : { level: '', value: '' };
+}
+function scheduleScopeValue(level, value) { return value ? `${level}::${value}` : ''; }
+function isScheduleScopeValue(value) { return /^(department|section)::/.test(String(value || '')); }
+function scheduleEmployeeMatchesScope(employee) {
+  const scope = scheduleScopeParts();
+  if (!scope.level) return true;
+  return scope.level === 'department'
+    ? String(employee?.department || '').trim() === scope.value
+    : employeeSection(employee) === scope.value;
+}
 function activityVisibleForScheduleSection(activity) {
   if (activity?.source === 'workwheel' && appSettings.workwheelGridDisplayMode === 'cells') return false;
-  if (!scheduleSectionFilter) return true;
-  const matchingEmployees = employees.filter(employee => employeeSection(employee) === scheduleSectionFilter);
-  return (activity.participants || []).some(participant => matchingEmployees.some(employee => employee.id === Number(participant.id)))
-    || activityRelevance(activity).sections.includes(scheduleSectionFilter);
+  const scope = scheduleScopeParts();
+  if (!scope.level) return true;
+  const relevance = activityRelevance(activity);
+  if (scope.level === 'section') {
+    const matchingEmployees = employees.filter(employee => employeeSection(employee) === scope.value);
+    const departmentMatches = matchingEmployees.some(employee => relevance.departments.includes(String(employee.department || '').trim()));
+    return relevance.sections.includes(scope.value) || departmentMatches;
+  }
+  const descendantSections = new Set(employees.filter(employee => String(employee.department || '').trim() === scope.value).map(employeeSection).filter(Boolean));
+  return relevance.departments.includes(scope.value) || relevance.sections.some(section => descendantSections.has(section));
+}
+function syncActivityRelevanceScope(changedLevel, event) {
+  const departmentSelect = document.getElementById('af-relevance-departments');
+  const sectionSelect = document.getElementById('af-relevance-sections');
+  const currentSelect = changedLevel === 'departments' ? departmentSelect : sectionSelect;
+  const otherSelect = changedLevel === 'departments' ? sectionSelect : departmentSelect;
+  if (!currentSelect || !otherSelect) return;
+  const selected = [...currentSelect.selectedOptions].map(option => option.value);
+  const previous = String(currentSelect.dataset.previousSelection || '').split('\u001f').filter(Boolean);
+  const newlySelected = selected.filter(value => !previous.includes(value));
+  if (newlySelected.length && !(event?.ctrlKey || event?.metaKey || event?.shiftKey)) {
+    const target = newlySelected.at(-1);
+    [...currentSelect.options].forEach(option => { option.selected = option.value === target; });
+  }
+  if (selected.length) [...otherSelect.options].forEach(option => { option.selected = false; });
+  currentSelect.dataset.previousSelection = [...currentSelect.selectedOptions].map(option => option.value).join('\u001f');
+  otherSelect.dataset.previousSelection = [...otherSelect.selectedOptions].map(option => option.value).join('\u001f');
+}
+function clearActivityRelevanceScope() {
+  ['af-relevance-departments', 'af-relevance-sections'].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    [...select.options].forEach(option => { option.selected = false; });
+    select.dataset.previousSelection = '';
+  });
 }
 function toggleWorkwheelAvailability(activityId, enabled) {
   if (typeof workwheelState === 'undefined' || !activityId) return;
@@ -533,11 +578,15 @@ const GRID_YEAR_KEY = 'teamManagerGridYear';
 const GRID_PERIOD_KEY = 'teamManagerGridPeriod';
 const APP_ZOOM_KEY = 'teamManagerAppZoom';
 const GRID_HIDDEN_EMPLOYEES_KEY = 'teamManagerGridHiddenEmployees';
+const GRID_INACTIVE_DISPLAY_MODE_KEY = 'teamManagerGridInactiveDisplayMode';
 const GRID_VIEW_MODE_KEY = 'teamManagerGridViewMode';
 const GRID_SECTION_COLLAPSE_KEY = 'teamManagerGridCollapsedSections';
 const GRID_SECTION_FILTER_KEY = 'teamManagerGridSectionFilter';
 function normalizeGridViewMode(value) {
   return ['all', 'timeline', 'employees'].includes(value) ? value : 'all';
+}
+function normalizeInactiveEmployeeDisplayMode(value) {
+  return value === 'hidden' ? 'hidden' : 'greyed';
 }
 function normalizeGridPeriod(value) {
   return ['year', 'month', 'week'].includes(value) ? value : 'year';
@@ -575,6 +624,9 @@ function applyGridPreferences(preferences, options = {}) {
       ? new Set(preferences.hiddenEmployeeIds.map(Number).filter(Number.isFinite))
       : new Set();
   } else if (resetMissing) hiddenEmployees = new Set();
+  if (Object.prototype.hasOwnProperty.call(preferences, 'inactiveDisplayMode')) {
+    inactiveEmployeeDisplayMode = normalizeInactiveEmployeeDisplayMode(preferences.inactiveDisplayMode);
+  } else if (resetMissing) inactiveEmployeeDisplayMode = 'greyed';
   if (Object.prototype.hasOwnProperty.call(preferences, 'viewMode')) {
     gridViewMode = normalizeGridViewMode(preferences.viewMode);
   } else if (resetMissing) gridViewMode = 'all';
@@ -598,15 +650,18 @@ function loadGridPreferences() {
   applyGridPreferences({
     year: parseInt(lsGet(GRID_YEAR_KEY), 10),
     hiddenEmployeeIds: savedHidden,
+    inactiveDisplayMode: lsGet(GRID_INACTIVE_DISPLAY_MODE_KEY) || 'greyed',
     viewMode: lsGet(GRID_VIEW_MODE_KEY) || 'all',
     period: lsGet(GRID_PERIOD_KEY) || 'year',
     collapsedSections: savedCollapsed,
   }, { resetMissing: true });
-  scheduleSectionFilter = lsGet(GRID_SECTION_FILTER_KEY) || '';
+  const savedScope = lsGet(GRID_SECTION_FILTER_KEY) || '';
+  scheduleSectionFilter = isScheduleScopeValue(savedScope) ? savedScope : savedScope ? scheduleScopeValue('section', savedScope) : '';
 }
 function saveGridPreferences() {
   lsSet(GRID_YEAR_KEY, String(gridYear));
   lsSet(GRID_HIDDEN_EMPLOYEES_KEY, JSON.stringify([...hiddenEmployees]));
+  lsSet(GRID_INACTIVE_DISPLAY_MODE_KEY, inactiveEmployeeDisplayMode);
   lsSet(GRID_VIEW_MODE_KEY, gridViewMode);
   lsSet(GRID_PERIOD_KEY, gridPeriod);
   lsSet(GRID_SECTION_COLLAPSE_KEY, JSON.stringify(collapsedGridSections));
@@ -761,6 +816,7 @@ function openPersonalSettings() {
   document.getElementById('personal-password').value = '';
   const preferences = hostedUser.preferences || {};
   document.getElementById('personal-jump-today').checked = preferences.jumpToTodayOnGridChange !== false;
+  document.getElementById('personal-auto-activity-page-scroll').checked = preferences.autoActivityPageOnHorizontalScroll !== false;
   document.getElementById('personal-dark-mode').checked = preferences.darkMode === true;
   document.getElementById('personal-zoom').value = String(normalizeAppZoom(preferences.zoom));
   document.getElementById('personal-colleague-notifications').checked = preferences.colleagueChangeNotificationsEnabled === true;
@@ -780,6 +836,7 @@ async function savePersonalSettings(event) {
     email: document.getElementById('personal-email').value,
     preferences: {
       jumpToTodayOnGridChange: document.getElementById('personal-jump-today').checked,
+      autoActivityPageOnHorizontalScroll: document.getElementById('personal-auto-activity-page-scroll').checked,
       darkMode: document.getElementById('personal-dark-mode').checked,
       zoom: normalizeAppZoom(document.getElementById('personal-zoom').value),
       colleagueChangeNotificationsEnabled: document.getElementById('personal-colleague-notifications').checked,
@@ -792,6 +849,7 @@ async function savePersonalSettings(event) {
   if (!response.ok) { error.textContent = result.error || 'Could not save account settings.'; return; }
   hostedUser = { ...hostedUser, ...result.user, preferences: result.preferences };
   appSettings.jumpToTodayOnGridChange = result.preferences.jumpToTodayOnGridChange !== false;
+  appSettings.autoActivityPageOnHorizontalScroll = result.preferences.autoActivityPageOnHorizontalScroll !== false;
   appSettings.darkMode = result.preferences.darkMode === true;
   applyAppZoom(result.preferences.zoom);
   applyTheme();
@@ -2812,6 +2870,7 @@ let summaryGraphMeasure = 'hours';
 let summaryGraphDir = 'desc';
 let summaryColumnsDraft = null;
 let empSearch = '', empFilterDept = '', empFilterCatId = null;
+let inactivePersonnelCollapsed = true;
 let scheduleSectionFilter = '';
 let deptColorsExpanded = false;
 let collapsedPersonnelSections = new Set();
@@ -2821,6 +2880,7 @@ let draggedPersonnelId = null;
 let hierarchyOrderExpanded = false;
 let hiddenEmployees = new Set();
 let hiddenEmployeesDraft = null;
+let inactiveEmployeeDisplayMode = 'greyed';
 let pastActivitiesExpanded = false;
 let gridViewMode = 'all';
 let gridPeriod = 'year';
@@ -3087,6 +3147,7 @@ function loadFromData(data) {
       ? e.categoryIds.map(Number).filter(Number.isFinite)
       : (joinCatIds[+e.id] || []),
     sortOrder: normalizeEmployeeSortOrder(e.sortOrder),
+    inactive: e.inactive === true,
   }));
   ensureEmployeeSortOrders(employees);
   ensureDepartmentOrders();
@@ -3281,7 +3342,7 @@ function showHostedAuthScreen(mode, message = '') {
   document.getElementById('atlas-auth-screen')?.remove();
   const screen = document.createElement('div');
   screen.id = 'atlas-auth-screen';
-  const setupFields = mode === 'setup' ? '<section class="atlas-wizard-step" data-step="1"><div class="atlas-wizard-kicker">Step 1 of 5</div><h2>Create administrator</h2><p>Create the first account that will manage this ATLAS installation.</p><label>Name<input id="atlas-auth-name" autocomplete="name" required></label><label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Email<input id="atlas-auth-email" type="email" autocomplete="email" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label></section><section class="atlas-wizard-step" data-step="2" hidden><div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation structure</h2><p>Choose the depth that best matches how your organisation is arranged.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner and can be changed later.</small></label><div class="atlas-choice-grid"><label><input type="radio" name="atlas-organisation-type" value="process-subteams" checked><b>2 levels</b><span>Process → Team</span><small>Useful for a simple team structure.</small></label><label><input type="radio" name="atlas-organisation-type" value="section-process-team"><b>3 levels</b><span>Section → Process → Team</span><small>Adds a section above processes.</small></label><label><input type="radio" name="atlas-organisation-type" value="department-section-process-team"><b>4 levels</b><span>Department → Section → Process → Team</span><small>For larger departmental structures.</small></label><label><input type="radio" name="atlas-organisation-type" value="organisation-department-section-process-team"><b>5 levels</b><span>Organisation → Department → Section → Process → Team</span><small>Full organisation hierarchy.</small></label></div></section><section class="atlas-wizard-step" data-step="3" hidden><div class="atlas-wizard-kicker">Step 3 of 5</div><h2>Shift Rotation</h2><p>Plan recurring shifts and crew rotations separately from the activity schedule. After setup, mark personnel as <b>Include in Shift Rotation</b> and optionally assign Shift Teams.</p><label class="atlas-feature-card"><input id="atlas-auth-shift-rotation" type="checkbox"><span><b>Enable Shift Rotation</b><small>Show the rotation planner and related settings.</small></span></label></section><section class="atlas-wizard-step" data-step="4" hidden><div class="atlas-wizard-kicker">Step 4 of 5</div><h2>Activity Workwheel</h2><p>Use a visual wheel for recurring meetings, deadlines, and activities for people or organisational units.</p><label class="atlas-feature-card"><input id="atlas-auth-workwheel" type="checkbox"><span><b>Enable Activity Workwheel</b><small>The current hosted Workwheel is browser-local until shared persistence is added.</small></span></label></section><section class="atlas-wizard-step" data-step="5" hidden><div class="atlas-wizard-kicker">Step 5 of 5</div><h2>Schedule check system</h2><p>Let personnel leaders check that activities and schedule entries match an external billing or verification system.</p><label class="atlas-feature-card"><input id="atlas-auth-operational-checks" type="checkbox" checked><span><b>Enable schedule check system</b><small>Responsibility scopes can be assigned to administrators after setup.</small></span></label><label>Organisation timezone<select id="atlas-auth-timezone" required><option value="UTC">UTC</option><option value="Europe/Oslo">Europe/Oslo</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/Chicago">America/Chicago</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Pacific/Auckland">Pacific/Auckland</option></select><small>Choose the IANA timezone used for organisation dates and schedule calculations.</small></section>' : '<label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="current-password" required></label>';
+  const setupFields = mode === 'setup' ? '<section class="atlas-wizard-step" data-step="1"><div class="atlas-wizard-kicker">Step 1 of 5</div><h2>Create administrator</h2><p>Create the first account that will manage this ATLAS installation.</p><label>Name<input id="atlas-auth-name" autocomplete="name" required></label><label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Email<input id="atlas-auth-email" type="email" autocomplete="email" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label></section><section class="atlas-wizard-step" data-step="2" hidden><div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation structure</h2><p>Choose the depth that best matches how your organisation is arranged.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner and can be changed later.</small></label><div class="atlas-choice-grid"><label><input type="radio" name="atlas-organisation-type" value="process-subteams" checked><b>2 levels</b><span>Process → Team</span><small>Useful for a simple team structure.</small></label><label><input type="radio" name="atlas-organisation-type" value="section-process-team"><b>3 levels</b><span>Section → Process → Team</span><small>Adds a section above processes.</small></label><label><input type="radio" name="atlas-organisation-type" value="department-section-process-team"><b>4 levels</b><span>Department → Section → Process → Team</span><small>For larger departmental structures.</small></label><label><input type="radio" name="atlas-organisation-type" value="organisation-department-section-process-team"><b>5 levels</b><span>Organisation → Department → Section → Process → Team</span><small>Full organisation hierarchy.</small></label></div></section><section class="atlas-wizard-step" data-step="3" hidden><div class="atlas-wizard-kicker">Step 3 of 5</div><h2>Shift Rotation</h2><p>Plan recurring shifts and crew rotations separately from the activity schedule. After setup, mark personnel as <b>Include in Shift Rotation</b> and optionally assign Shift Teams.</p><label class="atlas-feature-card"><input id="atlas-auth-shift-rotation" type="checkbox"><span><b>Enable Shift Rotation</b><small>Show the rotation planner and related settings.</small></span></label></section><section class="atlas-wizard-step" data-step="4" hidden><div class="atlas-wizard-kicker">Step 4 of 5</div><h2>Activity Workwheel</h2><p>Use a visual wheel for recurring meetings, deadlines, and activities for people or organisational units.</p><label class="atlas-feature-card"><input id="atlas-auth-workwheel" type="checkbox"><span><b>Enable Activity Workwheel</b><small>Workwheels are saved on the server and shared with authorized users.</small></span></label></section><section class="atlas-wizard-step" data-step="5" hidden><div class="atlas-wizard-kicker">Step 5 of 5</div><h2>Schedule check system</h2><p>Let personnel leaders check that activities and schedule entries match an external billing or verification system.</p><label class="atlas-feature-card"><input id="atlas-auth-operational-checks" type="checkbox" checked><span><b>Enable schedule check system</b><small>Responsibility scopes can be assigned to administrators after setup.</small></span></label><label>Organisation timezone<select id="atlas-auth-timezone" required><option value="UTC">UTC</option><option value="Europe/Oslo">Europe/Oslo</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/Chicago">America/Chicago</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Pacific/Auckland">Pacific/Auckland</option></select><small>Choose the IANA timezone used for organisation dates and schedule calculations.</small></section>' : '<label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="current-password" required></label>';
   const passwordHint = mode === 'setup' ? '<small>Use at least 12 characters.</small>' : '';
   screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>${mode === 'setup' ? 'Installation setup' : 'Sign in'}</h1><p class="atlas-auth-message">${message || (mode === 'setup' ? 'Configure this hosted planner in a few quick steps.' : 'Sign in to continue.')}</p><form id="atlas-auth-form">${setupFields}<div id="atlas-auth-error" role="alert"></div>${mode === 'setup' ? '<div class="atlas-wizard-actions"><button type="button" id="atlas-wizard-back">Back</button><button type="button" id="atlas-wizard-next" class="btn-primary">Next</button></div>' : '<button type="submit">Sign in</button>'}</form></div>`;
   document.body.appendChild(screen);
@@ -3380,6 +3441,7 @@ async function authenticateHostedApp() {
     hostedUser = { ...auth.user, preferences: auth.user.preferences, availableUsers: auth.user.availableUsers || [] };
     if (auth.user.preferences) {
       appSettings.jumpToTodayOnGridChange = auth.user.preferences.jumpToTodayOnGridChange !== false;
+      appSettings.autoActivityPageOnHorizontalScroll = auth.user.preferences.autoActivityPageOnHorizontalScroll !== false;
       appSettings.darkMode = auth.user.preferences.darkMode === true;
       applyAppZoom(auth.user.preferences.zoom);
       applyTheme();
@@ -4166,12 +4228,12 @@ function comparePersonnelHierarchy(left, right) {
     String(left?.name || '').localeCompare(String(right?.name || ''), 'nb', { sensitivity: 'base' });
 }
 function sortedEmployees() {
-  return [...employees].filter(employee => !scheduleSectionFilter || employeeSection(employee) === scheduleSectionFilter).sort(comparePersonnelHierarchy);
+  return [...employees].filter(scheduleEmployeeMatchesScope).sort(comparePersonnelHierarchy);
 }
 function deptGroups() {
   const byDept = new Map();
   for (const emp of employees) {
-    if (hiddenEmployees.has(emp.id) || (scheduleSectionFilter && employeeSection(emp) !== scheduleSectionFilter)) continue;
+    if (hiddenEmployees.has(emp.id) || !scheduleEmployeeMatchesScope(emp) || (emp.inactive === true && inactiveEmployeeDisplayMode === 'hidden')) continue;
     const department = emp.department || 'Unassigned';
     const subdepartment = employeeHierarchyLeaf(emp);
     const key = `${department}\u0000${subdepartment}`;
@@ -4180,10 +4242,20 @@ function deptGroups() {
   }
   return [...byDept.values()]
     .map(group => ({ ...group, groupOrder: Math.min(...group.emps.map(employee => Number(employee.sortOrder) || 9999)) }))
-    .sort((left, right) =>
-      compareDepartments(left.department, right.department) ||
-      comparePersonnelGroupLeaves(left.department, left.subdepartment, right.subdepartment) ||
-      (left.groupOrder - right.groupOrder))
+    .sort((left, right) => {
+      const leftEmployee = left.emps[0] || {};
+      const rightEmployee = right.emps[0] || {};
+      const organisationComparison = compareHierarchyAssignment(leftEmployee.organisation, rightEmployee.organisation)
+        || String(leftEmployee.organisation || '').localeCompare(String(rightEmployee.organisation || ''), 'nb', { sensitivity: 'base' });
+      if (organisationComparison) return organisationComparison;
+      return compareAssignedHierarchyValues(
+        'department',
+        [leftEmployee.organisation || 'Unassigned organisation'],
+        left.department,
+        right.department,
+      ) || comparePersonnelGroupLeaves(left.department, left.subdepartment, right.subdepartment)
+        || (left.groupOrder - right.groupOrder);
+    })
     .map(group => ({
       dept: group.department,
       subdept: group.subdepartment,
@@ -4297,6 +4369,7 @@ function rebuildEmployeePicker() {
       <strong style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Select employees</strong>
       <button class="icon-btn" type="button" onclick="closeEmployeePicker()" aria-label="Close">&times;</button>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px;padding:7px 8px;border:1px solid var(--border);border-radius:7px"><label style="display:flex;align-items:center;gap:7px;font-size:12px"><input type="radio" name="inactive-employee-display" value="greyed" ${inactiveEmployeeDisplayMode === 'greyed' ? 'checked' : ''} onchange="setInactiveEmployeeDisplayMode('greyed')">Inactive: greyed out</label><label style="display:flex;align-items:center;gap:7px;font-size:12px"><input type="radio" name="inactive-employee-display" value="hidden" ${inactiveEmployeeDisplayMode === 'hidden' ? 'checked' : ''} onchange="setInactiveEmployeeDisplayMode('hidden')">Inactive: hidden</label></div>
     <div style="display:flex;flex-direction:column;gap:8px;max-height:min(68vh,620px);overflow:auto">${deptMarkup}</div>
     <div style="display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;margin-top:12px">
       <button class="btn btn-sm" type="button" onclick="resetEmployeePickerSelection()">All</button>
@@ -4313,6 +4386,16 @@ function resetEmployeePickerSelection() {
 }
 function selectNoneEmployeePickerSelection() {
   hiddenEmployeesDraft = new Set(employees.map(emp => emp.id));
+  rebuildEmployeePicker();
+}
+function setInactiveEmployeeDisplayMode(mode) {
+  inactiveEmployeeDisplayMode = normalizeInactiveEmployeeDisplayMode(mode);
+  saveGridPreferences();
+  const scroll = document.getElementById('grid-scroll');
+  const left = scroll?.scrollLeft || 0;
+  const top = scroll?.scrollTop || 0;
+  if (currentPage === 'grid') renderGridBody(scheduleDays(), todayStr());
+  requestAnimationFrame(() => { const updated = document.getElementById('grid-scroll'); if (updated) { updated.scrollLeft = left; updated.scrollTop = top; } });
   rebuildEmployeePicker();
 }
 function applyEmployeePickerSelection() {
@@ -4795,7 +4878,7 @@ function renderShiftRotation() {
       : 36;
   const shiftTeams = normalizeShiftTeams(appSettings.shiftTeams);
   const shiftTeamById = new Map(shiftTeams.map(team => [team.id, team]));
-  const eligible = employees.filter(emp => emp.includeInShiftRotation === true).sort((a, b) => {
+  const eligible = employees.filter(emp => emp.includeInShiftRotation === true && emp.inactive !== true).sort((a, b) => {
     const left = shiftTeamById.get(a.shiftTeamId) || { order: 9999, name: 'Unassigned Shift Team' };
     const right = shiftTeamById.get(b.shiftTeamId) || { order: 9999, name: 'Unassigned Shift Team' };
     return left.order - right.order || left.name.localeCompare(right.name) || a.name.localeCompare(b.name);
@@ -4898,6 +4981,13 @@ function gridSpanLabelWidth(startIndex, endIndex) {
 }
 function renderGrid() {
   const range = scheduleRange();
+  const activeScope = scheduleScopeParts();
+  if (activeScope.level && !(activeScope.level === 'department'
+    ? employees.some(employee => String(employee.department || '').trim() === activeScope.value)
+    : employees.some(employee => employeeSection(employee) === activeScope.value))) {
+    scheduleSectionFilter = '';
+    saveGridPreferences();
+  }
   const days = range.days;
   const dayColumnWidth = gridPeriod === 'week'
     ? Math.min(180, Math.max(72, Math.floor((window.innerWidth - 300) / Math.max(1, days.length))))
@@ -4906,6 +4996,7 @@ function renderGrid() {
       : 36;
   const today = todayStr();
   const scheduleSections = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  const scheduleDepartments = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
 
   let monthCells = '', weekCells = '', dayCells = '';
   let mLabel = '', mCount = 0, mIndex = 0;
@@ -4945,15 +5036,16 @@ function renderGrid() {
           <select class="plain-select" style="height:32px;padding:5px 7px;width:76px" onchange="applyAppZoom(this.value)" aria-label="Application zoom" title="Local application zoom">
             ${[80,90,100,110,125,150,175].map(value => `<option value="${value}" ${appZoom === value ? 'selected' : ''}>${value}%</option>`).join('')}
           </select>
-          <select class="plain-select" style="height:32px;padding:5px 9px" onchange="setGridViewMode(this.value)" aria-label="Show schedule layout">
-            <option value="all" ${gridViewMode === 'all' ? 'selected' : ''}>Show: All</option>
-            <option value="timeline" ${gridViewMode === 'timeline' ? 'selected' : ''}>Show: Timeline only</option>
-            <option value="employees" ${gridViewMode === 'employees' ? 'selected' : ''}>Show: Employees only</option>
+          <select class="plain-select" style="height:32px;padding:5px 9px" onchange="setGridViewMode(this.value)" aria-label="View schedule layout" title="Choose which schedule sections to display">
+            <option value="all" ${gridViewMode === 'all' ? 'selected' : ''}>View: All</option>
+            <option value="timeline" ${gridViewMode === 'timeline' ? 'selected' : ''}>View: Timeline only</option>
+            <option value="employees" ${gridViewMode === 'employees' ? 'selected' : ''}>View: Employees only</option>
           </select>
           ${canHostedCheckOff() ? `<button class="btn btn-sm${showAdminCheckIndicators ? ' btn-primary' : ''}" type="button" onclick="toggleAdminCheckIndicators()" aria-pressed="${showAdminCheckIndicators}" title="Show or hide administrator check-off indicators">${showAdminCheckIndicators ? 'Hide checks' : 'Show checks'}</button>` : ''}
-          <select class="plain-select" style="height:32px;padding:5px 9px;max-width:180px" onchange="setScheduleSectionFilter(this.value)" aria-label="Show section">
-            <option value="">All sections</option>
-            ${scheduleSections.map(section => `<option value="${esc(section)}" ${scheduleSectionFilter === section ? 'selected' : ''}>${esc(section)}</option>`).join('')}
+          <select class="plain-select" style="height:32px;padding:5px 9px;max-width:200px" onchange="setScheduleSectionFilter(this.value)" aria-label="Show department or section" title="Filter personnel and activities by explicit organizational scope">
+            <option value="">Show: All</option>
+            <optgroup label="Departments">${scheduleDepartments.map(department => { const value = scheduleScopeValue('department', department); return `<option value="${esc(value)}" ${scheduleSectionFilter === value ? 'selected' : ''}>${esc(department)} (Department)</option>`; }).join('')}</optgroup>
+            <optgroup label="Sections">${scheduleSections.map(section => { const value = scheduleScopeValue('section', section); return `<option value="${esc(value)}" ${scheduleSectionFilter === value || (!isScheduleScopeValue(scheduleSectionFilter) && scheduleSectionFilter === section) ? 'selected' : ''}>${esc(section)} (Section)</option>`; }).join('')}</optgroup>
           </select>
           <div class="flex items-center gap-1" role="group" aria-label="Schedule period">
             ${['week', 'month', 'year'].map(period => `<button class="btn btn-sm${gridPeriod === period ? ' btn-primary' : ''}" onclick="setGridPeriod('${period}')">${period[0].toUpperCase()}${period.slice(1)}</button>`).join('')}
@@ -5030,7 +5122,7 @@ function renderGrid() {
           </div>
         </div>
       </div>
-      <div id="grid-scroll" style="position:relative;min-height:0;overflow:auto" onwheel="handleActivityListWheel(event)">
+      <div id="grid-scroll" style="position:relative;min-height:0;overflow:auto" onwheel="handleActivityListWheel(event)" onscroll="syncActivitiesToHorizontalViewport(event)">
         <div id="employee-picker" style="display:none"></div>
         <table class="gtable">
           <thead>
@@ -5249,6 +5341,8 @@ function renderGridBody(days, today) {
               </td><td colspan="${days.length}" style="background:${colors.bg};opacity:.3;border-bottom:1px solid ${colors.accent}"></td></tr>`;
           }
           for (const emp of group.emps) {
+            const inactive = emp.inactive === true;
+            const greyedOut = inactive && inactiveEmployeeDisplayMode === 'greyed';
             const teamName = emp.team || '';
             const employeeColors = resolveProcessColor(
               emp.department || 'Unassigned',
@@ -5256,8 +5350,8 @@ function renderGridBody(days, today) {
               emp.process || '',
             ) || (teamName ? resolveSubdepartmentColor(emp.department || 'Unassigned', teamName) : null) || colors.accent;
             const employeeRowColors = { bg: `${employeeColors}22`, accent: employeeColors };
-            html += `<tr><td class="gempl sticky-left" style="background:linear-gradient(${employeeRowColors.bg},${employeeRowColors.bg}),var(--surface);border-right:2px solid var(--border) !important">
-              <div class="flex items-center justify-between gap-2"><div class="emp-name">${displayEmployeeNameMarkup(emp)}</div></div>
+            html += `<tr class="${greyedOut ? 'inactive-schedule-row' : ''}"><td class="gempl sticky-left" style="background:linear-gradient(${employeeRowColors.bg},${employeeRowColors.bg}),var(--surface);border-right:2px solid var(--border) !important">
+              <div class="flex items-center justify-between gap-2"><div class="emp-name">${displayEmployeeNameMarkup(emp)}${inactive ? '<span class="inactive-schedule-badge">Inactive</span>' : ''}</div></div>
               <div class="emp-sub">${esc(emp.role || '')}</div>
             </td>`;
             for (const d of days) {
@@ -5271,6 +5365,8 @@ function renderGridBody(days, today) {
     }
   }
   tbody.innerHTML = cleanHtml(html);
+  const gridScroll = document.getElementById('grid-scroll');
+  if (gridScroll) lastActivityViewportLeft = gridScroll.scrollLeft;
 }
 
 function activityPageCapacity() {
@@ -5311,6 +5407,61 @@ function changeActivityPage(direction) {
   });
 }
 let activityWheelLocked = false;
+let activityViewportSyncTimer = null;
+let lastActivityViewportLeft = null;
+function syncActivitiesToHorizontalViewport(event) {
+  const scroll = event?.currentTarget || document.getElementById('grid-scroll');
+  if (!scroll || appSettings.autoActivityPageOnHorizontalScroll === false || gridViewMode === 'timeline' || collapsedGridSections.activities || activityRangeSelection.active || cellSelection.active) return;
+  if (lastActivityViewportLeft === null) { lastActivityViewportLeft = scroll.scrollLeft; return; }
+  if (Math.abs(scroll.scrollLeft - lastActivityViewportLeft) < 4) return;
+  lastActivityViewportLeft = scroll.scrollLeft;
+  if (activityViewportSyncTimer) clearTimeout(activityViewportSyncTimer);
+  activityViewportSyncTimer = setTimeout(() => {
+    activityViewportSyncTimer = null;
+    const dateCells = [...scroll.querySelectorAll('thead .gh-day[data-date]')];
+    const sticky = scroll.querySelector('thead .gh-emp.sticky-left');
+    const stickyRight = sticky?.getBoundingClientRect().right ?? scroll.getBoundingClientRect().left;
+    const scrollRect = scroll.getBoundingClientRect();
+    const visibleDates = dateCells.filter(cell => {
+      const rect = cell.getBoundingClientRect();
+      return rect.right > stickyRight + 1 && rect.left < scrollRect.right - 1;
+    }).map(cell => cell.dataset.date).filter(Boolean);
+    if (!visibleDates.length) return;
+    const visibleStart = visibleDates[0], visibleEnd = visibleDates[visibleDates.length - 1];
+    const { start, end } = scheduleRange();
+    const today = todayStr();
+    const filter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
+    const candidates = activities.filter(activity => activity.startDate <= end && activity.endDate >= start && activityVisibleForScheduleSection(activity))
+      .filter(activity => (filter === 'all' || activityStatus(activity) === filter) && (pastActivitiesExpanded || activity.endDate >= today))
+      .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
+    let firstMatch = candidates.findIndex(activity => activity.endDate >= visibleStart && activity.startDate <= visibleEnd);
+    if (firstMatch < 0) {
+      if (visibleStart < today && !pastActivitiesExpanded) return;
+      const midpoint = visibleStart <= today && visibleEnd >= today ? today : (visibleStart > today ? visibleStart : visibleEnd);
+      const distanceToViewport = activity => activity.endDate < midpoint
+        ? new Date(`${midpoint}T00:00:00`) - new Date(`${activity.endDate}T00:00:00`)
+        : activity.startDate > midpoint
+          ? new Date(`${activity.startDate}T00:00:00`) - new Date(`${midpoint}T00:00:00`)
+          : 0;
+      const nearest = candidates.map((activity, index) => ({ index, distance: distanceToViewport(activity) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (!nearest) return;
+      firstMatch = nearest.index;
+    }
+    const pageSize = activityPageCapacity();
+    const nextOffset = Math.floor(firstMatch / pageSize) * pageSize;
+    if (nextOffset === activityPageOffset) return;
+    const scrollLeft = scroll.scrollLeft, scrollTop = scroll.scrollTop;
+    activityPageOffset = nextOffset;
+    renderGridBody(scheduleDays(), today);
+    requestAnimationFrame(() => {
+      const updated = document.getElementById('grid-scroll');
+      if (!updated) return;
+      updated.scrollLeft = scrollLeft;
+      updated.scrollTop = scrollTop;
+    });
+  }, 110);
+}
 function handleActivityListWheel(event) {
   if (gridViewMode === 'timeline' || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !event.target.closest?.('.activity-grid-row')) return;
   // While the pointer is over an activity row, always swallow vertical wheel
@@ -5509,6 +5660,9 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const rotation = rotationRecord(emp.id, ds);
   const rotationMeta = rotationShiftMeta(rotation?.shift);
   const birthday = isEmployeeBirthday(emp, ds);
+  const birthdayYear = birthday ? Number(ds.slice(0, 4)) : NaN;
+  const birthYear = birthday ? Number(String(emp.birthday).slice(0, 4)) : NaN;
+  const birthdayAge = Number.isInteger(birthdayYear) && Number.isInteger(birthYear) ? birthdayYear - birthYear : null;
 
   const tipParts = [];
   if (holiday?.isSpecialDay && !acts.length) tipParts.push(`Special day: ${holiday.name}${holiday.nonWorking ? ' (non-working)' : ''}`);
@@ -5538,7 +5692,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   }
   if (overtime) tipParts.push(`Overtime: ${formatHoursNumber(overtime.hours)}h${overtime.note ? ` (${overtime.note})` : ''}`);
   if (cellNote) tipParts.push(`Note: ${cellNote}`);
-  if (birthday) tipParts.push(`Birthday: ${emp.name}`);
+  if (birthday) tipParts.push(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`);
   workwheelEvents.forEach(event => tipParts.push(`Workwheel: ${event.title}${event.startTime && event.endTime ? `\nTime: ${event.startTime}–${event.endTime}` : '\nAll day'}`));
   if (!tipParts.length) tipParts.push('Click to set status');
 
@@ -5588,7 +5742,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const holidayTint = holiday && !primaryActivity && !si
     ? `background:${holiday.color || '#ef4444'}28 !important;color:${holiday.color || '#ef4444'} !important;border-color:${holiday.color || '#ef4444'}55;${weekend ? 'filter:brightness(.86);' : ''}`
     : '';
-  const birthdayBadge = birthday ? `<span class="birthday-cake" title="Birthday">${svgIcon('cake', 'Birthday')}</span>` : '';
+  const birthdayBadge = birthday ? `<span class="birthday-cake" title="${esc(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`)}" aria-label="${esc(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`)}">${svgIcon('cake', 'Birthday')}</span>` : '';
   const overtimeBadge = overtime
     ? `<span class="overtime-badge" title="Overtime: ${formatHoursNumber(overtime.hours)}h${overtime.note ? ` · ${esc(overtime.note)}` : ''}">OT ${formatHoursNumber(overtime.hours)}h</span>`
     : '';
@@ -6746,12 +6900,17 @@ function openActModal(id) {
   editingActId = id === undefined || id === null || id === '' ? null : Number(id);
   const act = editingActId === null ? null : activities.find(a => a.id === editingActId);
   const relevance = activityRelevance(act);
+  const currentScope = !act ? scheduleScopeParts() : null;
+  if (currentScope?.level === 'department') relevance.departments = [currentScope.value];
+  if (currentScope?.level === 'section') relevance.sections = [currentScope.value];
   const departmentOptions = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort();
   const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort();
   const departmentSelect = document.getElementById('af-relevance-departments');
   const sectionSelect = document.getElementById('af-relevance-sections');
   departmentSelect.innerHTML = departmentOptions.map(value => `<option value="${esc(value)}" ${relevance.departments.includes(value) ? 'selected' : ''}>${esc(value)}</option>`).join('');
   sectionSelect.innerHTML = sectionOptions.map(value => `<option value="${esc(value)}" ${relevance.sections.includes(value) ? 'selected' : ''}>${esc(value)}</option>`).join('');
+  departmentSelect.dataset.previousSelection = relevance.departments.join('\u001f');
+  sectionSelect.dataset.previousSelection = relevance.sections.join('\u001f');
   const preset = !act ? pendingActivityPreset : null;
   const today = todayStr();
   const defaultStart = preset?.startDate || (today.startsWith(`${gridYear}-`) ? today : `${gridYear}-01-01`);
@@ -7886,16 +8045,17 @@ function renderEmployees() {
     const deptName = emp.department || '';
     const subdeptName = employeeHierarchyLeaf(emp);
     const organisationName = emp.organisation || 'Unassigned organisation';
-    const groupKey = `${organisationName}\u0000${deptName}\u0000${subdeptName}`;
+    const groupKey = `${emp.inactive === true ? '1' : '0'}\u0000${organisationName}\u0000${deptName}\u0000${subdeptName}`;
     if (!byDept.has(groupKey)) byDept.set(groupKey, []);
     byDept.get(groupKey).push(emp);
   }
   const groups = [...byDept.entries()].map(([groupKey, list]) => {
-    const [organisation, department, subdepartment] = groupKey.split('\u0000');
+    const [inactiveKey, organisation, department, subdepartment] = groupKey.split('\u0000');
     const sorted = [...list].sort((a, b) => ((a.sortOrder ?? 9999) - (b.sortOrder ?? 9999)) || a.name.localeCompare(b.name));
-    return { organisation, department, subdepartment, list: sorted, minOrder: sorted[0]?.sortOrder ?? 99, processOrder: Math.min(...list.map(employee => Number(employee.processOrder) || Number(employee.sortOrder) || 9999)) };
+    return { inactive: inactiveKey === '1', organisation, department, subdepartment, list: sorted, minOrder: sorted[0]?.sortOrder ?? 99, processOrder: Math.min(...list.map(employee => Number(employee.processOrder) || Number(employee.sortOrder) || 9999)) };
   });
   groups.sort((a, b) => {
+    if (a.inactive !== b.inactive) return a.inactive ? 1 : -1;
     const left = a.list[0] || { organisation: a.organisation, department: a.department, section: a.subdepartment };
     const right = b.list[0] || { organisation: b.organisation, department: b.department, section: b.subdepartment };
     if (!left.department && right.department) return -1;
@@ -7965,9 +8125,21 @@ function renderEmployees() {
   if (!filtered.length) {
     rowsHtml = `<tr><td colspan="10" class="empty-note">${employees.length ? 'No personnel match the current filters.' : 'No personnel yet. Click "Add Employee" to create the first record.'}</td></tr>`;
   } else {
+    let renderedInactive = false;
     let renderedOrganisation = null;
     let renderedDepartment = null;
     for (const group of groups) {
+      if (group.inactive !== renderedInactive) {
+        renderedInactive = group.inactive;
+        renderedOrganisation = null;
+        renderedDepartment = null;
+        if (renderedInactive) {
+          const inactiveCount = filtered.filter(employee => employee.inactive === true).length;
+          rowsHtml += `<tr class="dept-row inactive-personnel-divider"><td colspan="10"><button class="btn btn-sm" type="button" aria-expanded="${!inactivePersonnelCollapsed}" onclick="inactivePersonnelCollapsed=!inactivePersonnelCollapsed;renderEmployees()">${svgIcon(inactivePersonnelCollapsed ? 'chevronRight' : 'chevronDown')} Inactive personnel · ${inactiveCount}</button></td></tr>`;
+          if (inactivePersonnelCollapsed) continue;
+        }
+      }
+      if (group.inactive && inactivePersonnelCollapsed) continue;
       if (group.organisation !== renderedOrganisation) {
         renderedOrganisation = group.organisation;
         renderedDepartment = null;
@@ -7998,8 +8170,9 @@ function renderEmployees() {
         const personnelColor = resolveProcessColor(emp.department || 'Unassigned', emp.section || emp.subdepartment || '', emp.process || '')
           || (emp.team ? resolveSubdepartmentColor(emp.department || 'Unassigned', emp.team) : null)
           || sectionColor;
-        rowsHtml += `<tr class="personnel-colored-row" style="--personnel-row-color:${personnelColor}" draggable="true" ondragstart="startPersonnelDrag(event,${emp.id})" ondragend="endPersonnelDrag(event)" ondragover="allowPersonnelDrop(event)" ondragleave="clearPersonnelDrop(event)" ondrop="dropPersonnel(event,${emp.id})">
-          <td><span class="personnel-drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span><div style="font-weight:500;display:inline">${esc(emp.name)}</div>${cats.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">${cats.map(catChip).join('')}</div>` : ''}</td>
+        const inactive = emp.inactive === true;
+        rowsHtml += `<tr class="personnel-colored-row${inactive ? ' personnel-inactive' : ''}" style="--personnel-row-color:${personnelColor}" draggable="true" ondragstart="startPersonnelDrag(event,${emp.id})" ondragend="endPersonnelDrag(event)" ondragover="allowPersonnelDrop(event)" ondragleave="clearPersonnelDrop(event)" ondrop="dropPersonnel(event,${emp.id})">
+          <td><span class="personnel-drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span><div style="font-weight:500;display:inline">${esc(emp.name)}</div>${inactive ? '<span class="chip" style="margin-left:6px;font-size:10px">Inactive</span>' : ''}${cats.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">${cats.map(catChip).join('')}</div>` : ''}</td>
           <td class="muted">${esc(emp.email || '') || '<span class="sum-dash">—</span>'}</td>
           <td>${esc(emp.role || '')}</td>
           <td class="muted">${esc(employeeHierarchyLeaf(emp))}${emp.level ? `<div style="font-size:11px;margin-top:2px">${esc(emp.level)}</div>` : ''}</td>
@@ -8021,7 +8194,7 @@ function renderEmployees() {
     <div class="flex items-center justify-between mb-4" style="flex-wrap:wrap;gap:12px">
       <div>
         <div class="page-title">Personnel</div>
-        <div class="page-sub">${employees.length} team member${employees.length !== 1 ? 's' : ''} across ${allDepts.length} department${allDepts.length !== 1 ? 's' : ''}</div>
+        <div class="page-sub">${filtered.length} personnel</div>
       </div>
       <div class="flex gap-2">
         <button class="btn" onclick="openCategoryManager()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m20.5 13.5-7 7a2 2 0 0 1-2.8 0l-7.2-7.2a2 2 0 0 1-.5-1.1L2.5 5a2 2 0 0 1 2.2-2.2l7.2.5a2 2 0 0 1 1.1.5l7.5 7.5a1.6 1.6 0 0 1 0 2.2z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg> Manage Categories</button>
@@ -8124,6 +8297,7 @@ function openEmpModal(id) {
   document.getElementById('ef-phone-priv').value = emp?.phonePrivate || '';
   document.getElementById('ef-sort').value = emp?.sortOrder ?? nextAvailableEmployeeSortOrder();
   document.getElementById('ef-shift-rotation').checked = emp?.includeInShiftRotation === true;
+  document.getElementById('ef-inactive').checked = emp?.inactive === true;
   const shiftTeamSelect = document.getElementById('ef-shift-team');
   shiftTeamSelect.innerHTML = `<option value="">Unassigned Shift Team</option>${normalizeShiftTeams(appSettings.shiftTeams).map(team => `<option value="${esc(team.id)}">${esc(team.name)}</option>`).join('')}`;
   shiftTeamSelect.value = emp?.shiftTeamId || '';
@@ -8163,6 +8337,7 @@ async function saveEmployee() {
   const phonePrivate = document.getElementById('ef-phone-priv').value.trim();
   const sortRaw = document.getElementById('ef-sort').value.trim();
   const includeInShiftRotation = document.getElementById('ef-shift-rotation').checked === true;
+  const inactive = document.getElementById('ef-inactive').checked === true;
   const shiftTeamId = document.getElementById('ef-shift-team').value;
   if (!name || !email || !role) { alert('Name, email, and role are required.'); return; }
   if (Array.from(name).length > 30) { alert('Employee name can be at most 30 characters.'); return; }
@@ -8176,7 +8351,7 @@ async function saveEmployee() {
     ? (normalizeEmployeeSortOrder(empById(editingEmpId)?.sortOrder) ?? nextAvailableEmployeeSortOrder(employees, editingEmpId))
     : nextAvailableEmployeeSortOrder();
 
-  const rec = { name, email, role, organisation, department: dept, section, process, team, subdepartment: section, level, birthday, homeAddress, phoneWork, phonePrivate, sortOrder, categoryIds: [...selectedEmpCatIds], includeInShiftRotation, shiftTeamId };
+  const rec = { name, email, role, organisation, department: dept, section, process, team, subdepartment: section, level, birthday, homeAddress, phoneWork, phonePrivate, sortOrder, categoryIds: [...selectedEmpCatIds], includeInShiftRotation, shiftTeamId, inactive };
   const existingEmployee = editingEmpId ? empById(editingEmpId) : null;
   const rotationDates = existingEmployee?.includeInShiftRotation && !includeInShiftRotation
     ? rotationDatesForEmployee(editingEmpId) : [];
@@ -8941,13 +9116,13 @@ function renderDashboard() {
         ${rosterGroups.length ? rosterGroups.map(group => `
           <div class="card">
             <div class="flex items-center justify-between mb-4">
-              <div><div class="card-title" style="font-size:14px">${esc(group.dept)}</div><div class="muted text-sm" style="margin-top:2px">${esc(group.subdept || 'All teams/processes')}</div></div>
+              <div><div class="card-title roster-group-title" style="font-size:14px">${esc([group.dept, group.subdept].filter(Boolean).join(' · '))}</div></div>
               <div class="muted text-sm">${group.emps.length} member${group.emps.length !== 1 ? 's' : ''}</div>
             </div>
             ${group.emps.map(emp => {
               const entry = getEntryObj(`${emp.id}_${today}`);
               const key = entry?.status ?? 'at_work';
-              return `<div class="roster-row"><div><div style="font-size:13.5px;font-weight:500">${esc(emp.name)}</div><div class="muted" style="font-size:11.5px">${esc(emp.role)}</div></div>${statusBadge(key)}</div>`;
+              return `<div class="roster-row"><div style="min-width:0"><div style="font-size:13.5px;font-weight:500">${esc(emp.name)}</div><div class="muted" style="font-size:11.5px">${esc(emp.role || '')}</div></div>${statusBadge(key)}</div>`;
             }).join('')}
           </div>`).join('') : '<div class="card empty-note">No personnel yet.</div>'}
       </div>
@@ -9526,7 +9701,8 @@ function renderSummary() {
   ];
   const graphMetric = graphMetricOptions.find(item => item.key === summaryGraphMetric) || graphMetricOptions.at(-1);
   summaryGraphMetric = graphMetric?.key || 'total';
-  const graphRows = [...rows].map(row => ({ row, value: graphMetric ? (graphMetric.measure(row)[summaryGraphMeasure] || 0) : 0 }))
+  const graphMeasureField = summaryGraphMeasure === 'days' ? 'units' : 'hours';
+  const graphRows = [...rows].map(row => ({ row, value: graphMetric ? (graphMetric.measure(row)[graphMeasureField] || 0) : 0 }))
     .sort((a, b) => (summaryGraphDir === 'asc' ? a.value - b.value : b.value - a.value) || peopleOrder(a.row, b.row));
   const graphMax = Math.max(1, ...graphRows.map(item => item.value));
   const graphHasValues = graphRows.some(item => item.value > 0);

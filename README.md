@@ -8,6 +8,8 @@ ATLAS (Allocation, Timeline, Load and Allocation System) is an offline-runtime-r
 - `packages/server` — Fastify service and the isolated SQLite adapter in `src/db.ts`.
 - `apps/web` — Vite TypeScript client.
 
+In hosted Team Manager, Workwheels are shared and saved in the server database. The Workwheel toolbar shows save status; revisions are checked to handle concurrent edits.
+
 ## Local development
 
 Install dependencies once, then run the Fastify and Vite processes separately:

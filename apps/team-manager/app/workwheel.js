@@ -1,6 +1,7 @@
 'use strict';
 
-// Workwheel prototype: intentionally independent from the main planner JSON.
+// Workwheel data is server-backed in hosted mode and browser-recovered in the
+// offline standalone mode; optional JSON import/export remains available.
 const WORKWHEEL_STORAGE_KEY = 'team-manager-workwheel-state';
 const WORKWHEEL_FILE_META_KEY = 'team-manager-workwheel-file-meta';
 const WORKWHEEL_VIEW_KEY = 'team-manager-workwheel-view';
@@ -15,7 +16,13 @@ let workwheelZoom = 100;
 let workwheelFocus = { mode: 'month', date: '', weekStart: '' };
 let workwheelRevision = 0;
 let workwheelHostedLoaded = false;
+let workwheelHostedNeedsMigration = false;
 let workwheelPendingConflicts = [];
+let workwheelSavePromise = null;
+let workwheelSaveQueued = false;
+let workwheelSaveStatus = 'saved';
+let workwheelSaveError = '';
+let workwheelServerSnapshot = null;
 function loadWorkwheelView() {
   try {
     const view = JSON.parse(localStorage.getItem(WORKWHEEL_VIEW_KEY) || '{}');
@@ -54,7 +61,7 @@ function workwheelNormalize(raw) {
        id: String(activity.id || `workwheel-activity-${index + 1}`), linkedScheduleActivityId: activity.linkedScheduleActivityId == null ? null : Number(activity.linkedScheduleActivityId), sourceActivityId: activity.sourceActivityId == null ? null : Number(activity.sourceActivityId), wheelId: wheelIds.has(String(activity.wheelId)) ? String(activity.wheelId) : (wheels[0]?.id || ''), title: String(activity.title || 'Activity').trim(), type: String(activity.type || 'meeting'), date: workwheelDate(activity.date), time: String(activity.time || '').trim(), startTime: String(activity.startTime || '').trim(), endTime: String(activity.endTime || '').trim(), location: String(activity.location || '').trim(), participantIds: Array.isArray(activity.participantIds) ? [...new Set(activity.participantIds.map(Number).filter(Number.isFinite))] : [], responsibleMode: activity.responsibleMode === 'external' || (!activity.responsibleId && activity.responsibleName) ? 'external' : 'internal', responsibleId: String(activity.responsibleId || ''), responsibleName: String(activity.responsibleName || '').trim(), responsibleOrganization: String(activity.responsibleOrganization || '').trim(), responsibleEmail: String(activity.responsibleEmail || '').trim(), responsiblePhone: String(activity.responsiblePhone || '').trim(), notes: String(activity.notes || '').trim(), color: /^#[\da-fA-F]{6}$/.test(activity.color) ? activity.color : '#3b82f6', status: ['planned', 'confirmed', 'cancelled'].includes(activity.status) ? activity.status : 'planned', recurrence: ['none', 'daily', 'weekly', 'fortnightly', 'monthly'].includes(activity.recurrence) ? activity.recurrence : 'none', weekday: Number.isInteger(Number(activity.weekday)) ? Number(activity.weekday) : new Date(`${activity.date}T00:00:00`).getDay(), endDate: workwheelDate(activity.endDate)
   });
   const activities = Array.isArray(source.activities) ? source.activities.map((activity, index) => normalizeActivity(activity, index)).filter(activity => activity.title && activity.date && activity.wheelId) : [];
-  const availableActivities = Array.isArray(source.availableActivities) ? source.availableActivities.map((activity, index) => normalizeActivity(activity, index, true)).filter(activity => activity.title).map(activity => ({ ...activity, wheelId: '' })) : [];
+  const availableActivities = Array.isArray(source.availableActivities) ? source.availableActivities.map((activity, index) => ({ ...normalizeActivity(activity, index, true), ownerUserId: String(activity.ownerUserId || '').trim(), editorUserIds: Array.isArray(activity.editorUserIds) ? [...new Set(activity.editorUserIds.map(String))] : [], wheelId: '' })).filter(activity => activity.title) : [];
   return { version: 1, wheels, activities, availableActivities };
 }
 function loadWorkwheelState() {
@@ -62,10 +69,15 @@ function loadWorkwheelState() {
   if (!workwheelSelectedId || !workwheelState.wheels.some(wheel => wheel.id === workwheelSelectedId)) workwheelSelectedId = workwheelState.wheels[0]?.id || '';
 }
 function saveWorkwheelState() {
-  localStorage.setItem(WORKWHEEL_STORAGE_KEY, JSON.stringify(workwheelState));
-  if (typeof hostedMode !== 'undefined' && hostedMode) saveHostedWorkwheel();
+  try { localStorage.setItem(WORKWHEEL_STORAGE_KEY, JSON.stringify(workwheelState)); }
+  catch (error) {
+    console.warn('Workwheel browser recovery is unavailable.', error);
+    showToast?.('Browser recovery could not be updated. Keep this page open until the server save completes.', 7000);
+  }
+  if (typeof hostedMode !== 'undefined' && hostedMode) return saveHostedWorkwheel();
   const status = document.getElementById('workwheel-file-status');
-  if (status) status.textContent = 'Browser recovery updated. Use Export JSON to create a portable file.';
+  if (status) status.textContent = 'Saved to browser recovery. Use Export JSON for a portable copy.';
+  return Promise.resolve(true);
 }
 function workwheelCanEdit(wheel = workwheelState.wheels.find(item => item.id === workwheelSelectedId)) {
   if (typeof hostedUser === 'undefined' || !hostedUser) return true;
@@ -79,16 +91,110 @@ async function loadHostedWorkwheel() {
   workwheelRevision = Number(result.revision) || 1;
   const hosted = workwheelNormalize(result.document || {});
   const local = workwheelNormalize(workwheelState);
-  workwheelState = hosted.wheels.length || hosted.activities.length ? hosted : local;
+  workwheelServerSnapshot = hosted;
+  const hostedHasData = hosted.wheels.length || hosted.activities.length || hosted.availableActivities.length;
+  workwheelState = hostedHasData ? hosted : local;
+  if (!hostedHasData && typeof hostedUser !== 'undefined' && hostedUser?.id) {
+    workwheelState.wheels = workwheelState.wheels.map(wheel => wheel.ownerUserId ? wheel : { ...wheel, ownerUserId: hostedUser.id });
+  }
+  if (!workwheelState.wheels.some(wheel => wheel.id === workwheelSelectedId)) workwheelSelectedId = workwheelState.wheels[0]?.id || '';
   workwheelHostedLoaded = true;
-  if (!hosted.wheels.length && local.wheels.length) await saveHostedWorkwheel();
+  workwheelHostedNeedsMigration = !hostedHasData && Boolean(local.wheels.length || local.activities.length || local.availableActivities.length);
 }
 async function saveHostedWorkwheel() {
-  if (typeof hostedMode === 'undefined' || !hostedMode || !workwheelRevision) return;
-  const response = await fetch('/api/workwheel', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: workwheelState, expectedRevision: workwheelRevision }) });
-  const result = await response.json().catch(() => ({}));
-  if (response.status === 409) { workwheelHostedLoaded = false; await loadHostedWorkwheel(); showToast?.('Workwheel was updated elsewhere and has been reloaded.', 4000); return; }
-  if (response.ok) workwheelRevision = Number(result.revision) || workwheelRevision + 1;
+  if (typeof hostedMode === 'undefined' || !hostedMode) return true;
+  workwheelSaveQueued = true;
+  if (workwheelSavePromise) return workwheelSavePromise;
+  workwheelSavePromise = (async () => {
+    let conflictRetries = 0;
+    while (workwheelSaveQueued) {
+      workwheelSaveQueued = false;
+      if (!workwheelRevision) await loadHostedWorkwheel();
+      const snapshot = workwheelNormalize(workwheelState);
+      workwheelSaveStatus = 'saving';
+      workwheelSaveError = '';
+      updateWorkwheelSaveIndicator();
+      let response = await fetch('/api/workwheel', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: snapshot, expectedRevision: workwheelRevision }) });
+      let result = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        const latestResponse = await fetch('/api/workwheel', { cache: 'no-store' });
+        if (!latestResponse.ok) throw new Error('Could not reload the latest server Workwheel after a concurrent update.');
+        const latest = await latestResponse.json();
+        const remote = workwheelNormalize(latest.document || {});
+        // Three-way merge so local deletions are respected while unrelated
+        // changes from other users are retained.
+        const latestLocal = workwheelNormalize(workwheelState);
+        workwheelState = mergeWorkwheelDocuments(workwheelServerSnapshot || workwheelNormalize({}), latestLocal, remote);
+        workwheelRevision = Number(latest.revision) || 1;
+        if (++conflictRetries > 3) throw new Error('Workwheel kept changing on the server. Try saving again.');
+        response = await fetch('/api/workwheel', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ document: workwheelState, expectedRevision: workwheelRevision }) });
+        result = await response.json().catch(() => ({}));
+        if (response.status === 409) throw new Error('Workwheel changed again during merge. Your local copy is retained; save again to retry.');
+        showToast?.('Workwheel changes were merged with a concurrent server update.', 4500);
+      }
+      if (!response.ok) throw new Error(result.error || 'Could not save Workwheel to the server.');
+      workwheelRevision = Number(result.revision) || workwheelRevision + 1;
+      workwheelServerSnapshot = workwheelNormalize(result.document || workwheelState);
+      if (JSON.stringify(workwheelNormalize(workwheelState)) !== JSON.stringify(snapshot)) workwheelSaveQueued = true;
+    }
+    workwheelSaveStatus = 'saved';
+    updateWorkwheelSaveIndicator();
+    return true;
+  })().catch(error => {
+    workwheelSaveStatus = 'error';
+    workwheelSaveError = error?.message || 'Workwheel save failed.';
+    updateWorkwheelSaveIndicator();
+    showToast?.(`${workwheelSaveError} Changes remain in this browser until saved.`, 7000);
+    return false;
+  }).finally(() => {
+    workwheelSavePromise = null;
+    if (workwheelSaveQueued && workwheelSaveStatus !== 'error') saveHostedWorkwheel();
+  });
+  return workwheelSavePromise;
+}
+function mergeWorkwheelDocuments(base, local, remote) {
+  const mergeList = (baseList, localList, remoteList) => {
+    const baseById = new Map((baseList || []).map(item => [String(item.id), item]));
+    const localById = new Map((localList || []).map(item => [String(item.id), item]));
+    const remoteById = new Map((remoteList || []).map(item => [String(item.id), item]));
+    const ids = new Set([...baseById.keys(), ...localById.keys(), ...remoteById.keys()]);
+    const merged = [];
+    for (const id of ids) {
+      const before = baseById.get(id);
+      const mine = localById.get(id);
+      const theirs = remoteById.get(id);
+      const localChanged = JSON.stringify(before) !== JSON.stringify(mine);
+      const remoteChanged = JSON.stringify(before) !== JSON.stringify(theirs);
+      let chosen;
+      if (localChanged) chosen = mine;
+      else chosen = theirs;
+      if (chosen) merged.push(chosen);
+    }
+    return merged;
+  };
+  return {
+    version: 1,
+    wheels: mergeList(base.wheels, local.wheels, remote.wheels),
+    activities: mergeList(base.activities, local.activities, remote.activities),
+    availableActivities: mergeList(base.availableActivities, local.availableActivities, remote.availableActivities),
+  };
+}
+function updateWorkwheelSaveIndicator() {
+  const label = workwheelSaveStatus === 'saving' ? 'Saving…' : workwheelSaveStatus === 'error' ? 'Save failed' : 'Saved';
+  const title = workwheelSaveError || (typeof hostedMode !== 'undefined' && hostedMode ? 'Workwheel is saved on the server.' : 'Workwheel is saved in browser recovery.');
+  document.querySelectorAll('.workwheel-save-status').forEach(element => {
+    element.textContent = label;
+    element.title = title;
+    element.dataset.state = workwheelSaveStatus;
+  });
+  document.querySelectorAll('.workwheel-save-retry').forEach(button => {
+    button.hidden = workwheelSaveStatus !== 'error';
+  });
+}
+function retryHostedWorkwheelSave() {
+  workwheelSaveStatus = 'saving';
+  updateWorkwheelSaveIndicator();
+  return saveHostedWorkwheel();
 }
 function workwheelResponsible(activity) {
   const employee = typeof empById === 'function' && activity.responsibleId ? empById(Number(activity.responsibleId)) : null;
@@ -292,8 +398,15 @@ function renderWorkwheelFocus(activityOccurrences) {
 }
 async function renderWorkwheel() {
   if (typeof appSettings === 'undefined' || appSettings.workwheelEnabled !== true) { nav('grid'); return; }
-  loadWorkwheelState();
-  await loadHostedWorkwheel();
+  if (typeof hostedMode === 'undefined' || !hostedMode) loadWorkwheelState();
+  else {
+    if (!workwheelHostedLoaded) loadWorkwheelState();
+    await loadHostedWorkwheel();
+    if (workwheelHostedNeedsMigration) {
+      workwheelHostedNeedsMigration = false;
+      await saveHostedWorkwheel();
+    }
+  }
   const content = document.getElementById('content');
   const range = workwheelMonthDates();
   const wheel = workwheelState.wheels.find(item => item.id === workwheelSelectedId);
@@ -362,7 +475,7 @@ async function renderWorkwheel() {
   const emptyWheelDescription = 'Create a wheel for a team, process, or other organisational unit.';
   const importedScheduleIds = new Set(workwheelState.activities.filter(activity => activity.wheelId === workwheelSelectedId).flatMap(activity => [Number(activity.sourceActivityId), Number(activity.linkedScheduleActivityId)]).filter(Number.isFinite));
   const scheduleLibraryList = typeof activities !== 'undefined' && activities.length
-    ? activities.filter(activity => !importedScheduleIds.has(Number(activity.id)) && !activity.workwheelActivityId).slice().sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || ''))).map(activity => `<div class="workwheel-library-item"><span class="workwheel-dot" style="background:${workwheelEsc(activity.color || '#3b82f6')}"></span><div><strong>${workwheelEsc(activity.name || 'Activity')}</strong><small>${workwheelEsc(workwheelDisplayDate(activity.startDate || ''))}${activity.endDate && activity.endDate !== activity.startDate ? ` → ${workwheelEsc(workwheelDisplayDate(activity.endDate))}` : ''} · Schedule activity</small></div><button class="btn btn-sm" onclick="importScheduleWorkwheelActivity(${Number(activity.id)})">Make available</button></div>`).join('')
+    ? activities.filter(activity => !importedScheduleIds.has(Number(activity.id)) && !activity.workwheelActivityId).slice().sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || ''))).map(activity => `<div class="workwheel-library-item"><span class="workwheel-dot" style="background:${workwheelEsc(activity.color || '#3b82f6')}"></span><div><strong>${workwheelEsc(activity.name || 'Activity')}</strong><small>${workwheelEsc(workwheelDisplayDate(activity.startDate || ''))}${activity.endDate && activity.endDate !== activity.startDate ? ` → ${workwheelEsc(workwheelDisplayDate(activity.endDate))}` : ''} · Schedule activity</small></div><button class="btn btn-sm" onclick="importScheduleWorkwheelActivity(${Number(activity.id)})" ${canEdit ? '' : 'disabled'}>Make available</button></div>`).join('')
     : '<div class="empty-note">No additional Schedule activities are available.</div>';
   const todayOverlay = workwheelTodayMarker(range.year, range.month, range.days);
   content.innerHTML = `<div class="workwheel-page"><header class="workwheel-header"><div><h1 class="page-title">Workwheel</h1><p class="page-sub">Plan recurring activities for teams and organisational units.</p></div><div class="flex gap-2"><button class="btn btn-sm" onclick="changeWorkwheelMonth(-1)">‹</button><strong class="workwheel-period">${workwheelMonth.toLocaleDateString('en-US', { month:'long', year:'numeric' })}</strong><button class="btn btn-sm" onclick="changeWorkwheelMonth(1)">›</button><button class="btn btn-primary" onclick="openWorkwheelActivity()">Add activity</button></div></header><div class="workwheel-toolbar"><select class="plain-select" onchange="selectWorkwheel(this.value)">${workwheelState.wheels.map(item => `<option value="${workwheelEsc(item.id)}" ${item.id === workwheelSelectedId ? 'selected' : ''}>${workwheelEsc(item.name)}</option>`).join('') || '<option>No wheels</option>'}</select><label class="workwheel-zoom">Zoom <select class="plain-select" onchange="setWorkwheelZoom(this.value)">${[75,100,125,150,175,200].map(value => `<option value="${value}" ${value === workwheelZoom ? 'selected' : ''}>${value}%</option>`).join('')}</select></label><button class="btn btn-sm" onclick="addWorkwheel()">New wheel</button><button class="btn btn-sm" onclick="openWorkwheelFileSettings()">Data file</button></div>${wheel ? `<div class="workwheel-layout"><section class="card workwheel-card"><div class="workwheel-viewport"><div class="workwheel-zoom-stage" style="--workwheel-scale:${workwheelZoom / 100}"><div class="workwheel-circle" data-direction="clockwise">${workwheelRingMarkup(range.year, range.month, range.days)}${todayOverlay}${segments || '<div class="workwheel-empty-ring">Add an activity</div>'}</div></div></div><div class="workwheel-legend">${list}</div></section><aside class="card workwheel-upcoming"><h3>Upcoming</h3><p class="page-sub">Next ${appSettings.workwheelUpcomingDays || 14} days</p>${upcomingList}</aside></div>` : `<div class="card workwheel-empty"><h3>Create your first wheel</h3><p class="page-sub">${emptyWheelDescription}</p><button class="btn btn-primary" onclick="addWorkwheel()">Create wheel</button></div>`}<section class="card workwheel-library"><div class="workwheel-library-header"><div><h3>Available schedule activities</h3><p class="page-sub">Import activities already created in Schedule into the selected wheel.</p></div></div><div class="workwheel-library-list">${scheduleLibraryList}</div></section>${focusPanel}</div>`;
@@ -371,6 +484,11 @@ async function renderWorkwheel() {
     upcomingPanel.innerHTML = `<h3>Today</h3><p class="page-sub">Today’s agenda</p>${todayList}<h3 class="workwheel-upcoming-next-heading">Next ${appSettings.workwheelUpcomingDays || 14} days</h3>${futureList}`;
   }
   content.querySelector('.workwheel-circle')?.addEventListener('click', handleWorkwheelCircleClick);
+  const toolbar = content.querySelector('.workwheel-toolbar');
+  if (toolbar && !toolbar.querySelector('.workwheel-save-status')) {
+    toolbar.insertAdjacentHTML('afterbegin', '<span class="workwheel-save-status" role="status" aria-live="polite"></span><button type="button" class="btn btn-sm workwheel-save-retry" onclick="retryHostedWorkwheelSave()" hidden>Retry save</button>');
+  }
+  updateWorkwheelSaveIndicator();
 }
 function selectWorkwheel(id) { workwheelSelectedId = id; renderWorkwheel(); }
 function handleWorkwheelCircleClick(event) {
@@ -397,6 +515,7 @@ function handleWorkwheelCircleClick(event) {
 }
 function changeWorkwheelMonth(offset) { workwheelMonth = new Date(workwheelMonth.getFullYear(), workwheelMonth.getMonth() + offset, 1); renderWorkwheel(); }
 function addWorkwheel() {
+  if (typeof hostedUser !== 'undefined' && hostedUser?.role === 'viewer') { alert('You have view-only access to Workwheels.'); return; }
   const name = document.getElementById('workwheel-name-input');
   const section = document.getElementById('workwheel-section-input');
   if (name) name.value = '';
@@ -404,14 +523,15 @@ function addWorkwheel() {
   document.getElementById('workwheel-create-modal')?.classList.add('open');
   setTimeout(() => name?.focus(), 30);
 }
-function saveNewWorkwheel() {
+async function saveNewWorkwheel() {
+  if (typeof hostedUser !== 'undefined' && hostedUser?.role === 'viewer') { alert('You have view-only access to Workwheels.'); return; }
   const name = document.getElementById('workwheel-name-input')?.value.trim();
   const section = document.getElementById('workwheel-section-input')?.value.trim() || name;
   if (!name) return;
   const id = `wheel-${Date.now()}`;
   workwheelState.wheels.push({ id, name, section, unitPath: section, ownerUserId: typeof hostedUser !== 'undefined' ? String(hostedUser?.id || '') : '', editorUserIds: [], color: '#3b82f6' });
   workwheelSelectedId = id;
-  saveWorkwheelState();
+  await saveWorkwheelState();
   closeModal('workwheel-create-modal');
   renderWorkwheel();
 }
@@ -428,15 +548,7 @@ function openWorkwheelActivity(id = null) {
   document.getElementById('ww-activity-start-time').value = activity?.startTime || '';
   document.getElementById('ww-activity-end-time').value = activity?.endTime || '';
   document.getElementById('ww-activity-location').value = activity?.location || '';
-  const typeSelect = document.getElementById('ww-activity-type');
-  const activityType = activity?.type || 'meeting';
-  if (activityType && ![...typeSelect.options].some(option => option.value === activityType)) {
-    const importedTypeOption = document.createElement('option');
-    importedTypeOption.value = activityType;
-    importedTypeOption.textContent = activityType;
-    typeSelect.appendChild(importedTypeOption);
-  }
-  typeSelect.value = activityType;
+  document.getElementById('ww-activity-type').value = activity?.type || 'Meeting';
   document.getElementById('ww-activity-recurrence').value = activity?.recurrence || 'none';
   document.getElementById('ww-activity-weekday').value = String(activity?.weekday ?? new Date(`${activity?.date || workwheelLocalDate(new Date())}T00:00:00`).getDay());
   buildWorkwheelColorPicker(activity?.color || '#2563eb');
@@ -454,7 +566,7 @@ function openWorkwheelActivity(id = null) {
   document.getElementById('ww-activity-delete').style.display = activity ? '' : 'none';
   const publishButton = document.getElementById('ww-publish-schedule');
   if (publishButton) publishButton.style.display = activity && canEdit ? '' : 'none';
-  if (publishButton) publishButton.textContent = activity?.linkedScheduleActivityId ? 'Update Schedule' : 'Publish to Schedule';
+  if (publishButton) publishButton.textContent = 'Add to Schedule';
   document.getElementById('workwheel-activity-modal').classList.add('open');
   toggleWorkwheelWeekday();
   ['ww-activity-date', 'ww-activity-start-time', 'ww-activity-end-time', 'ww-activity-recurrence'].forEach(id => document.getElementById(id)?.addEventListener('input', refreshWorkwheelConflictWarning));
@@ -470,7 +582,7 @@ function toggleWorkwheelWeekday() {
   const row = document.getElementById('ww-weekday-row');
   if (row) row.style.display = recurring ? '' : 'none';
 }
-function saveWorkwheelActivity() {
+async function saveWorkwheelActivity() {
   if (!workwheelCanEdit()) { alert('You have view-only access to this Workwheel.'); return; }
   const title = document.getElementById('ww-activity-title').value.trim();
   const date = document.getElementById('ww-activity-date').value;
@@ -490,7 +602,7 @@ function saveWorkwheelActivity() {
   const participantIds = [...document.querySelectorAll('#ww-activity-participants input:checked')].map(input => Number(input.value)).filter(Number.isFinite);
   Object.assign(activity, { title, wheelId: workwheelSelectedId, participantIds, date, endDate: recurrence === 'none' ? endDate : workwheelGridLookaheadEnd(), time: startTime && endTime ? `${startTime.replace(':','')}-${endTime.replace(':','')}` : '', startTime, endTime, location: document.getElementById('ww-activity-location').value.trim(), type: document.getElementById('ww-activity-type').value, recurrence, weekday: recurrence === 'weekly' ? Number(document.getElementById('ww-activity-weekday').value) : new Date(`${date}T00:00:00`).getDay(), color: document.getElementById('ww-activity-color').value || '#3b82f6', responsibleMode, responsibleId: responsibleMode === 'internal' ? document.getElementById('ww-activity-responsible-id').value : '', responsibleName: responsibleMode === 'external' ? responsibleName : '', responsibleOrganization: responsibleMode === 'external' ? document.getElementById('ww-responsible-organization').value.trim() : '', responsibleEmail: responsibleMode === 'external' ? document.getElementById('ww-responsible-email').value.trim() : '', responsiblePhone: responsibleMode === 'external' ? document.getElementById('ww-responsible-phone').value.trim() : '', notes: document.getElementById('ww-activity-notes').value.trim() });
   if (!workwheelEditingId) workwheelState.activities.push(activity);
-  saveWorkwheelState();
+  await saveWorkwheelState();
   closeModal('workwheel-activity-modal');
   renderWorkwheel();
 }
@@ -503,7 +615,7 @@ async function publishCurrentWorkwheelActivity() {
   if (!response.ok) { alert(result.error || 'Could not publish the activity to Schedule.'); return; }
   const activity = workwheelState.activities.find(item => item.id === workwheelEditingId);
   if (activity) activity.linkedScheduleActivityId = result.scheduleActivity.id;
-  saveWorkwheelState();
+  await saveWorkwheelState();
   showToast('Activity published to Schedule.', 3500);
   closeModal('workwheel-activity-modal');
   renderWorkwheel();
@@ -512,11 +624,12 @@ async function publishCurrentWorkwheelActivityId(id) {
   workwheelEditingId = id;
   await publishCurrentWorkwheelActivity();
 }
-function deleteWorkwheelActivity(id) {
+async function deleteWorkwheelActivity(id) {
   const activity = workwheelState.activities.find(item => item.id === id);
   if (!activity) return;
+  if (!workwheelCanEdit(workwheelState.wheels.find(wheel => wheel.id === activity.wheelId))) { alert('You have view-only access to this Workwheel.'); return; }
   workwheelState.activities = workwheelState.activities.filter(item => item.id !== id);
-  saveWorkwheelState();
+  await saveWorkwheelState();
   workwheelEditingId = null;
   closeModal('workwheel-activity-modal');
   renderWorkwheel();
@@ -528,32 +641,36 @@ function confirmDeleteWorkwheelActivity(id = workwheelEditingId) {
   if (confirm(`Delete "${activity.title}" and all of its recurring occurrences?`)) deleteWorkwheelActivity(id);
 }
 function openWorkwheelActivityTemplate() {
+  if (typeof hostedUser !== 'undefined' && hostedUser?.role === 'viewer') { alert('You have view-only access to Workwheel templates.'); return; }
   document.getElementById('ww-template-title').value = '';
   document.getElementById('ww-template-type').value = 'meeting';
   document.getElementById('ww-template-color').value = '#3b82f6';
   document.getElementById('workwheel-template-modal').classList.add('open');
   setTimeout(() => document.getElementById('ww-template-title')?.focus(), 30);
 }
-function saveWorkwheelActivityTemplate() {
+async function saveWorkwheelActivityTemplate() {
+  if (typeof hostedUser !== 'undefined' && hostedUser?.role === 'viewer') { alert('You have view-only access to Workwheel templates.'); return; }
   const title = document.getElementById('ww-template-title').value.trim();
   if (!title) return;
-  workwheelState.availableActivities.push({ id: `workwheel-template-${Date.now()}`, title, type: document.getElementById('ww-template-type').value, color: document.getElementById('ww-template-color').value || '#3b82f6', recurrence: 'none', date: '', wheelId: '' });
-  saveWorkwheelState();
+  workwheelState.availableActivities.push({ id: `workwheel-template-${Date.now()}`, title, type: document.getElementById('ww-template-type').value, color: document.getElementById('ww-template-color').value || '#3b82f6', recurrence: 'none', date: '', wheelId: '', ownerUserId: typeof hostedUser !== 'undefined' ? String(hostedUser?.id || '') : '', editorUserIds: [] });
+  await saveWorkwheelState();
   closeModal('workwheel-template-modal');
   renderWorkwheel();
 }
-function importAvailableWorkwheelActivity(templateId) {
+async function importAvailableWorkwheelActivity(templateId) {
   const template = workwheelState.availableActivities.find(activity => activity.id === templateId);
   if (!template || !workwheelSelectedId) return;
+  if (!workwheelCanEdit()) { alert('You have view-only access to this Workwheel.'); return; }
   const date = workwheelLocalDate(new Date());
   const activity = { ...template, id: `workwheel-activity-${Date.now()}`, wheelId: workwheelSelectedId, date, recurrence: 'none', weekday: new Date(`${date}T00:00:00`).getDay(), status: 'planned' };
   workwheelState.activities.push(activity);
-  saveWorkwheelState();
+  await saveWorkwheelState();
   renderWorkwheel();
 }
-function importScheduleWorkwheelActivity(activityId) {
+async function importScheduleWorkwheelActivity(activityId) {
   const source = typeof activities !== 'undefined' ? activities.find(activity => Number(activity.id) === Number(activityId)) : null;
   if (!source || !workwheelSelectedId) return;
+  if (!workwheelCanEdit()) { alert('You have view-only access to this Workwheel.'); return; }
   const scheduleType = typeof activityTypeMeta === 'function' ? activityTypeMeta(source) : null;
   const scheduleColor = scheduleType?.color || source.color || '#3b82f6';
   const existing = workwheelState.activities.find(activity => activity.wheelId === workwheelSelectedId && (Number(activity.sourceActivityId) === Number(source.id) || Number(source.workwheelActivityId) === Number(activity.id)));
@@ -579,7 +696,7 @@ function importScheduleWorkwheelActivity(activityId) {
   };
   if (existing) Object.assign(existing, imported);
   else workwheelState.activities.push(imported);
-  saveWorkwheelState();
+  await saveWorkwheelState();
   renderWorkwheel();
 }
 function openWorkwheelFileSettings() { if (typeof openSettingsChild === 'function') openSettingsChild('workwheel-file-modal', 'settings-modal'); else document.getElementById('workwheel-file-modal').classList.add('open'); document.getElementById('workwheel-file-status').textContent = `Loaded ${workwheelState.activities.length} activities in ${workwheelState.wheels.length} wheels.`; }
