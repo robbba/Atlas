@@ -65,6 +65,7 @@ Administrative compensation is independent of the physical shift. For example, a
 Planned assignments remain visible with diagonal hatching, but only Confirmed activities count in Workload, Summary, availability, and reports. Day and Night use lighter and darker shades of the assigned Work Time Code color.
 
 Personnel receive an automatic employee order number when added. The number can be edited from Personnel, and lower numbers appear first within each hierarchy group. Whole departments and named sub-teams can be moved up or down from Personnel → Department order and Sub-team order. Schedule follows that hierarchy, while direct department employees remain above the named sub-teams.
+Personnel receive an automatic employee order number when added. Use **Save & Add Another** to retain hierarchy fields while entering several people. Settings can provide a default organisation for new personnel without changing existing records. Hierarchy order is configurable in Organisation Structure, including unassigned departments, sections, processes, and teams.
 
 Dragging across dates creates a visible selection. **Remove from [activity]** removes only that activity from the selected dates; daily statuses and other activities remain. **Clear all selected cells** is the separate action for clearing everything in the selection. Both actions participate in Undo and browser recovery.
 
@@ -73,8 +74,10 @@ The Schedule toolbar includes a **Show** selector for departments and sections. 
 Employees can be marked **Temporarily inactive** in the employee editor without deleting their records, assignments, or history. They remain visible in Personnel under a collapsed **Inactive personnel** section at the bottom. In Schedule, the employee picker lets each workstation choose whether inactive personnel are greyed out or hidden; this is a local view preference and does not remove employment data.
 
 Activities can optionally be targeted to one or more Departments and Sections. Activities created while a department or section is selected inherit that scope. An activity with no targets is global and appears in **Show: All**; scoped views show only activities targeted to the selected scope.
+Activities can target multiple Departments, Sections, and Processes. Values within a category use OR matching, and selected categories combine with AND matching. The participant list filters to matching personnel while keeping previously selected out-of-scope people visible. An activity with no targets is global and appears in **Show: All**.
 
 The Activities header contains separate report buttons for **Team Work Schedule** and **Activity Schedule**. Team Work Schedule opens with all activities overlapping the selected period included; individual activities can be unchecked before previewing or printing.
+Activity type colors can be standardized from Settings. The Activity Schedule print groups ISO weeks, omits weeks without assigned personnel, and places larger week labels at the left of each week group. Turnaround assignments can record a physical shift interval per date; Work Code compensation remains separate.
 
 In Grid View, use **Import .ics holidays** in the Holidays section. Standard all-day `VEVENT` entries are shown for review before import. Only events in the active planner year are offered.
 

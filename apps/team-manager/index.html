@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=29">
+<link rel="stylesheet" href="css/styles.css?v=30">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -137,6 +137,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     </div>
     <div id="activity-report-content" style="overflow:auto;margin-top:14px"></div>
     <div class="modal-actions" style="align-items:center">
+      <button class="btn" onclick="openActivityReport(activityReportId)">Update report</button>
       <button class="btn" onclick="printActivityReport()">Print</button>
       <button class="btn btn-primary" onclick="exportActivityReportCsv()">Export CSV</button>
     </div>
@@ -173,7 +174,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <div class="form-row" style="margin:0"><label>Work phone</label><input id="ef-phone-work" type="tel" placeholder="+47 999 88 777"></div>
       <div class="form-row" style="margin:0"><label>Private phone</label><input id="ef-phone-priv" type="tel" placeholder="+47 111 22 333"></div>
     </div>
-    <div class="form-row"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ef-inactive"> Temporarily inactive (long trip / other mission)</label><div class="form-hint">They remain employed and retain schedule history. In Personnel, inactive employees appear in a collapsed section at the bottom. Schedule display (greyed or hidden) is controlled in the employee picker.</div></div>
+    <div class="form-row"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="ef-inactive" onchange="document.getElementById('ef-inactive-reason-wrap').style.display=this.checked?'':'none'"> Temporarily inactive (long trip / other mission)</label><div class="form-hint">They remain employed and retain schedule history. In Personnel, inactive employees appear in a collapsed section at the bottom. Schedule display (greyed or hidden) is controlled in the employee picker.</div><div id="ef-inactive-reason-wrap" style="display:none;margin-top:8px"><label>Reason (shown in Schedule)</label><input id="ef-inactive-reason" maxlength="240" placeholder="e.g. On course until October"><div class="form-hint">Keep sensitive details out of the reason; it is visible to Schedule users.</div></div></div>
     <div class="form-row">
       <label>Employee order <span class="muted" style="font-weight:400">(lower = higher)</span></label>
       <input id="ef-sort" type="number" min="1" max="9999" placeholder="e.g. 10">
@@ -189,8 +190,23 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row"><label>Shift Team / Crew <span class="muted" style="font-weight:400">(optional)</span></label><select id="ef-shift-team"><option value="">Unassigned Shift Team</option></select><div class="form-hint">Independent from the organisational Team. Managed in Shift Rotation settings.</div></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('emp-modal')">Cancel</button>
+      <button class="btn" id="emp-save-add-another" onclick="saveEmployee(true)">Save &amp; Add Another</button>
       <button class="btn btn-primary" onclick="saveEmployee()">Save</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="bulk-personnel-modal">
+  <div class="modal" style="width:560px">
+    <h3>Bulk edit personnel hierarchy</h3>
+    <p class="modal-desc" id="bulk-personnel-count"></p>
+    <p class="form-hint">Enter a new value to replace the selected employees’ values. Use Clear to remove a current value. Leave both untouched to keep that field as-is.</p>
+    <div class="form-row"><label>Organisation</label><div class="flex gap-2"><input id="bulk-organisation" style="flex:1"><label><input id="bulk-organisation-clear" type="checkbox" onchange="document.getElementById('bulk-organisation').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-organisation-hint"></div></div>
+    <div class="form-row"><label>Department</label><div class="flex gap-2"><input id="bulk-department" style="flex:1"><label><input id="bulk-department-clear" type="checkbox" onchange="document.getElementById('bulk-department').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-department-hint"></div></div>
+    <div class="form-row"><label>Section</label><div class="flex gap-2"><input id="bulk-section" style="flex:1"><label><input id="bulk-section-clear" type="checkbox" onchange="document.getElementById('bulk-section').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-section-hint"></div></div>
+    <div class="form-row"><label>Process</label><div class="flex gap-2"><input id="bulk-process" style="flex:1"><label><input id="bulk-process-clear" type="checkbox" onchange="document.getElementById('bulk-process').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-process-hint"></div></div>
+    <div class="form-row"><label>Team</label><div class="flex gap-2"><input id="bulk-team" style="flex:1"><label><input id="bulk-team-clear" type="checkbox" onchange="document.getElementById('bulk-team').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-team-hint"></div></div>
+    <div class="modal-actions"><button class="btn" onclick="closeModal('bulk-personnel-modal')">Cancel</button><button class="btn btn-primary" onclick="applyBulkPersonnelEdit()">Apply to selected</button></div>
   </div>
 </div>
 
@@ -221,6 +237,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <p class="modal-desc">Add a course or qualification to track across the personnel status board.</p>
     <div class="form-row"><label>Course name *</label><input id="course-name" placeholder="First aid course"></div>
     <div class="form-row"><label>Course code <span class="muted" style="font-weight:400">(optional)</span></label><input id="course-code" placeholder="FA-2026"></div>
+    <div class="form-row"><label>Applies to</label><select id="course-scope" class="plain-select" style="width:100%"><option value="all">All departments and sections</option></select><div class="form-hint">Choose a whole department or a specific section. Courses only apply to personnel in that scope.</div></div>
     <div class="modal-actions">
       <button class="btn btn-danger" id="course-delete-btn" style="margin-right:auto;display:none" onclick="deleteCourseFromModal()">Delete</button>
       <button class="btn" onclick="closeModal('course-modal')">Cancel</button>
@@ -235,6 +252,8 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <h3 id="req-def-modal-title">Add requirement</h3>
     <p class="modal-desc">Add an annual certification, review, or recurring requirement.</p>
     <div class="form-row"><label>Requirement name *</label><input id="req-def-name" placeholder="Annual safety review"></div>
+    <div class="form-row"><label>Record type</label><select id="req-def-kind" class="plain-select" style="width:100%"><option value="requirement">Annual requirement</option><option value="test">Recurring test</option></select></div>
+    <div class="form-row"><label>Applies to</label><select id="req-def-scope" class="plain-select" style="width:100%"><option value="all">All sections</option></select></div>
     <div class="modal-actions">
       <button class="btn btn-danger" id="req-def-delete-btn" style="margin-right:auto;display:none" onclick="deleteRequirementFromModal()">Delete</button>
       <button class="btn" onclick="closeModal('req-def-modal')">Cancel</button>
@@ -299,10 +318,11 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <div class="form-row" style="margin:0"><label>Activity status</label><select id="af-status" class="plain-select" style="width:100%"><option value="tentative">Planned</option><option value="confirmed">Confirmed</option><option value="cancelled">Cancelled</option></select></div>
     </div>
     <div class="form-row-2">
-      <div class="form-row" style="margin:0"><label>Relevant departments <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-departments" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope('departments', event)"></select></div>
-      <div class="form-row" style="margin:0"><label>Relevant sections <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-sections" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope('sections', event)"></select></div>
+      <div class="form-row" style="margin:0"><label>Relevant departments <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-departments" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
+      <div class="form-row" style="margin:0"><label>Relevant sections <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-sections" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
+      <div class="form-row" style="margin:0"><label>Relevant processes <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-processes" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
     </div>
-    <div class="flex items-center justify-between gap-2" style="margin-top:6px"><div class="form-hint" style="margin:0">A new activity inherits the current Schedule scope. Ctrl/Cmd-click for multiple targets.</div><button class="btn btn-sm" type="button" onclick="clearActivityRelevanceScope()">Clear targets</button></div>
+    <div class="flex items-center justify-between gap-2" style="margin-top:6px"><div class="form-hint" style="margin:0">A new activity inherits the current Schedule scope. Multiple selections combine within each category; categories combine together.</div><button class="btn btn-sm" type="button" onclick="clearActivityRelevanceScope()">Clear targets</button></div>
     <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;margin:8px 0"><input type="checkbox" id="af-count-load" checked> Counts toward staffing load</label>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(140px,1fr));gap:12px;max-width:620px">
       <div class="form-row" style="margin:0"><label>Day shift hours</label><input id="af-day-shift" placeholder="0730-2400"></div>
@@ -468,6 +488,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <input id="set-app-name" placeholder="e.g. Operations Team">
       <div class="form-hint">Shown as the main planning header. ATLAS remains the application name in the corner.</div>
     </div>
+    <div class="form-row"><label>Default personnel organisation</label><input id="set-default-personnel-organisation" maxlength="120" placeholder="e.g. CIS Battalion"><div class="form-hint">Prefilled when adding personnel; existing records are not changed.</div></div>
     <div class="form-row"><label>Schedule</label><button class="btn" type="button" onclick="openScheduleSettings()">Open Schedule settings</button><div class="form-hint">Core workday, grid behavior, special days, planning options, and activity deadline.</div></div>
     <div class="form-row"><label>Statuses &amp; Activity Codes</label><button class="btn" type="button" onclick="closeModal('settings-modal');openStatusManager()">Manage Statuses &amp; Activity Codes</button><div class="form-hint">Daily statuses and absences, activity categories, and work codes.</div></div>
     <div class="form-row"><label>Organisation Structure</label><button class="btn" type="button" onclick="openOrganisationStructure()">Manage Organisation Structure</button><div class="form-hint">Reorder and review Departments, Sections, Processes, and Teams.</div></div>
@@ -483,7 +504,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <div class="workwheel-settings-grid">
         <label class="workwheel-setting-field"><span>Workwheel upcoming window (days)</span><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"><small>Upcoming panel range.</small></label>
         <label class="workwheel-setting-field"><span>My schedule lookahead (days)</span><input id="set-my-schedule-lookahead-days" type="number" min="1" max="365" step="1" value="31"><small>Default: one month.</small></label>
-        <label class="workwheel-setting-field"><span>Schedule display</span><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option></select><small>Controls where Workwheel events appear in Schedule.</small></label>
+        <label class="workwheel-setting-field"><span>Schedule display</span><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option><option value="none">Hidden</option></select><small>Controls where Workwheel events appear in Schedule.</small></label>
         <div class="workwheel-setting-action"><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div>
       </div>
       <div class="form-hint">Experimental section activity wheels. Data is kept in a separate local JSON file.</div>
@@ -569,6 +590,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <div class="form-row-2"><div class="form-row" style="margin:0"><label>Start time</label><input id="ww-activity-start-time" type="time"></div><div class="form-row" style="margin:0"><label>End time</label><input id="ww-activity-end-time" type="time"></div></div><div class="form-hint" style="margin-bottom:13px">Leave both times blank for an all-day activity. For a timed activity, both start and end are required.</div>
     <div class="form-row"><label>Location</label><input id="ww-activity-location" placeholder="Meeting room, address, or online"></div>
     <div class="form-row-2"><div class="form-row" style="margin:0"><label>Type</label><input id="ww-activity-type" placeholder="Meeting, briefing, training…"></div><div class="form-row" style="margin:0"><label>Recurrence</label><select id="ww-activity-recurrence" class="plain-select" onchange="toggleWorkwheelWeekday()"><option value="none">None</option><option value="weekly">Weekly</option><option value="fortnightly">Every 14 days</option><option value="monthly">Monthly</option></select></div></div>
+    <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;margin:8px 0"><input id="ww-activity-publish-grid-markers" type="checkbox"> Publish markers to employee grid</label>
     <div class="form-row-2"><div class="form-row" id="ww-weekday-row" style="margin:0;display:none"><label>Weekday</label><select id="ww-activity-weekday" class="plain-select"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></div><div class="form-row" style="margin:0"><label>Activity color</label><div class="swatches" id="ww-activity-swatches"></div><input id="ww-activity-color" type="hidden" value="#2563eb"></div></div>
     <div class="form-row"><label>Responsible person</label><div class="responsible-mode-switch"><label><input type="radio" name="ww-responsible-mode" value="internal" checked onchange="toggleWorkwheelResponsibleMode()"> Internal personnel</label><label><input type="radio" name="ww-responsible-mode" value="external" onchange="toggleWorkwheelResponsibleMode()"> External contact</label></div></div>
     <div id="ww-responsible-internal" class="form-row"><label>Activity host</label><select id="ww-activity-responsible-id" class="plain-select"><option value="">Unassigned</option></select></div>
@@ -728,6 +750,6 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
   </div>
 </div>
 <script src="app/workwheel.js?v=8"></script>
-<script src="app/app.js?v=32"></script>
+<script src="app/app.js?v=39"></script>
 </body>
 </html>

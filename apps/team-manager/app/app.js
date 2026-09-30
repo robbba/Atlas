@@ -133,6 +133,7 @@ const LOCAL_ONLY_APP_SETTING_KEYS = [
 
 let appSettings = {
   appName: 'Organisation',
+  defaultPersonnelOrganisation: '',
   darkMode: false,
   autoSaveEnabled: true,
   autoSyncEnabled: true,
@@ -297,17 +298,18 @@ function normalizeActivityTypes(value) {
 function normalizeActivityRelevance(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const values = item => [...new Set((Array.isArray(item) ? item : []).map(value => String(value || '').trim()).filter(Boolean))];
-  return { departments: values(source.departments), sections: values(source.sections) };
+  return { departments: values(source.departments), sections: values(source.sections), processes: values(source.processes) };
 }
 function activityRelevance(activity) {
-  return normalizeActivityRelevance(activity?.relevance || { departments: activity?.departments, sections: activity?.sections });
+  return normalizeActivityRelevance(activity?.relevance || { departments: activity?.departments, sections: activity?.sections, processes: activity?.processes });
 }
 function employeeSection(employee) { return String(employee?.section || '').trim(); }
 function activityRelevantToEmployee(activity, employee) {
   if (!activity || !employee) return false;
   const relevance = activityRelevance(activity);
   return (!relevance.departments.length || relevance.departments.includes(String(employee.department || '').trim()))
-    && (!relevance.sections.length || relevance.sections.includes(employeeSection(employee)));
+    && (!relevance.sections.length || relevance.sections.includes(employeeSection(employee)))
+    && (!relevance.processes.length || relevance.processes.includes(String(employee.process || '').trim()));
 }
 function scheduleScopeParts() {
   const match = /^(department|section)::([\s\S]+)$/.exec(scheduleSectionFilter);
@@ -319,46 +321,28 @@ function scheduleEmployeeMatchesScope(employee) {
   const scope = scheduleScopeParts();
   if (!scope.level) return true;
   return scope.level === 'department'
-    ? String(employee?.department || '').trim() === scope.value
+    ? String(employee?.department || (employeeSection(employee) ? 'Independent sections' : '')).trim() === scope.value
     : employeeSection(employee) === scope.value;
 }
 function activityVisibleForScheduleSection(activity) {
-  if (activity?.source === 'workwheel' && appSettings.workwheelGridDisplayMode === 'cells') return false;
+  if (activity?.source === 'workwheel' && ['cells', 'none'].includes(appSettings.workwheelGridDisplayMode)) return false;
   const scope = scheduleScopeParts();
   if (!scope.level) return true;
   const relevance = activityRelevance(activity);
-  if (scope.level === 'section') {
-    const matchingEmployees = employees.filter(employee => employeeSection(employee) === scope.value);
-    const departmentMatches = matchingEmployees.some(employee => relevance.departments.includes(String(employee.department || '').trim()));
-    return relevance.sections.includes(scope.value) || departmentMatches;
-  }
-  const descendantSections = new Set(employees.filter(employee => String(employee.department || '').trim() === scope.value).map(employeeSection).filter(Boolean));
-  return relevance.departments.includes(scope.value) || relevance.sections.some(section => descendantSections.has(section));
+  const matchingEmployees = employees.filter(scheduleEmployeeMatchesScope);
+  const hasTargets = relevance.departments.length || relevance.sections.length || relevance.processes.length;
+  return !hasTargets || matchingEmployees.some(employee => activityRelevantToEmployee(activity, employee));
 }
-function syncActivityRelevanceScope(changedLevel, event) {
-  const departmentSelect = document.getElementById('af-relevance-departments');
-  const sectionSelect = document.getElementById('af-relevance-sections');
-  const currentSelect = changedLevel === 'departments' ? departmentSelect : sectionSelect;
-  const otherSelect = changedLevel === 'departments' ? sectionSelect : departmentSelect;
-  if (!currentSelect || !otherSelect) return;
-  const selected = [...currentSelect.selectedOptions].map(option => option.value);
-  const previous = String(currentSelect.dataset.previousSelection || '').split('\u001f').filter(Boolean);
-  const newlySelected = selected.filter(value => !previous.includes(value));
-  if (newlySelected.length && !(event?.ctrlKey || event?.metaKey || event?.shiftKey)) {
-    const target = newlySelected.at(-1);
-    [...currentSelect.options].forEach(option => { option.selected = option.value === target; });
-  }
-  if (selected.length) [...otherSelect.options].forEach(option => { option.selected = false; });
-  currentSelect.dataset.previousSelection = [...currentSelect.selectedOptions].map(option => option.value).join('\u001f');
-  otherSelect.dataset.previousSelection = [...otherSelect.selectedOptions].map(option => option.value).join('\u001f');
+function syncActivityRelevanceScope() {
+  buildParticipantPicker();
 }
 function clearActivityRelevanceScope() {
-  ['af-relevance-departments', 'af-relevance-sections'].forEach(id => {
+  ['af-relevance-departments', 'af-relevance-sections', 'af-relevance-processes'].forEach(id => {
     const select = document.getElementById(id);
     if (!select) return;
     [...select.options].forEach(option => { option.selected = false; });
-    select.dataset.previousSelection = '';
   });
+  buildParticipantPicker();
 }
 function toggleWorkwheelAvailability(activityId, enabled) {
   if (typeof workwheelState === 'undefined' || !activityId) return;
@@ -394,6 +378,8 @@ function normalizeAnnualRequirements(raw) {
     ? raw.requirements.map((requirement, index) => ({
         id: Number.isFinite(Number(requirement.id)) ? Number(requirement.id) : index + 1,
         name: String(requirement.name || `Requirement ${index + 1}`).trim(),
+        kind: requirement.kind === 'test' ? 'test' : 'requirement',
+        section: String(requirement.section || '').trim(),
       }))
     : null;
   if (existingRequirements) {
@@ -405,7 +391,7 @@ function normalizeAnnualRequirements(raw) {
 
   const legacy = raw.fitnessTests && typeof raw.fitnessTests === 'object' ? raw.fitnessTests : null;
   if (!legacy) return { requirements: [], requirementRecords: {} };
-  const requirements = [{ id: 1, name: 'Condition' }, { id: 2, name: 'Strength' }];
+  const requirements = [{ id: 1, name: 'Condition', kind: 'test', section: '' }, { id: 2, name: 'Strength', kind: 'test', section: '' }];
   const requirementRecords = {};
   Object.entries(legacy).forEach(([key, record]) => {
     const match = key.match(/^(\d+)_(condition|strength)$/);
@@ -534,6 +520,8 @@ function loadSettings() {
         ? Object.fromEntries(Object.entries(parsed.departmentColors).map(([dept, value]) => [String(dept), normalizeHexColor(value)]))
         : {};
       appSettings.activityTypes = normalizeActivityTypes(parsed.activityTypes);
+        appSettings.workwheelGridDisplayMode = ['cells', 'both', 'row', 'none'].includes(parsed.workwheelGridDisplayMode) ? parsed.workwheelGridDisplayMode : 'cells';
+      appSettings.defaultPersonnelOrganisation = String(parsed.defaultPersonnelOrganisation || '').trim().slice(0, 120);
       appSettings.workCodes = normalizeWorkCodes(parsed.workCodes);
       appSettings.securityLabel = normalizeSecurityLabel(parsed.securityLabel);
       appSettings.shiftRotationEnabled = parsed.shiftRotationEnabled === true;
@@ -750,13 +738,14 @@ function applyAppName() {
 
 function openSettings() {
   document.getElementById('set-app-name').value = appSettings.appName;
+  document.getElementById('set-default-personnel-organisation').value = appSettings.defaultPersonnelOrganisation || '';
   const secLabel = normalizeSecurityLabel(appSettings.securityLabel || {});
   document.getElementById('set-security-label-enabled').checked = secLabel.enabled === true;
   document.getElementById('set-security-label-text').value = secLabel.text || '';
   document.getElementById('set-security-label-color').value = secLabel.color;
   document.getElementById('set-workwheel-enabled').checked = appSettings.workwheelEnabled === true;
   document.getElementById('set-workwheel-upcoming-days').value = String(appSettings.workwheelUpcomingDays || 14);
-  document.getElementById('set-workwheel-grid-display').value = ['cells', 'both', 'row'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
+  document.getElementById('set-workwheel-grid-display').value = ['cells', 'both', 'row', 'none'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
   document.getElementById('set-my-schedule-lookahead-days').value = String(appSettings.myScheduleLookaheadDays || 31);
   renderHolidaySettings();
   updateDefaultJsonStatus();
@@ -1207,6 +1196,23 @@ async function moveStructureNode(nodeJson, direction) {
   if (!targetValue) return;
   await reorderStructureNodes(source, { ...source, value: targetValue }, direction > 0);
   renderOrganisationStructure();
+}
+async function moveStandaloneSection(section, direction) {
+  const organisation = employees.find(employee => !employee.department && employeeSection(employee) === section)?.organisation || 'Unassigned organisation';
+  const parent = [organisation, 'Independent sections'];
+  const sections = [...new Set(employees.filter(employee => !employee.department && employeeSection(employee)).map(employeeSection))]
+    .sort((left, right) => compareAssignedHierarchyValues('section', parent, left, right));
+  const fromIndex = sections.indexOf(section);
+  const toIndex = fromIndex + Number(direction);
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= sections.length) return;
+  await mutateState('moveStandaloneSection', () => {
+    const reordered = [...sections];
+    [reordered[fromIndex], reordered[toIndex]] = [reordered[toIndex], reordered[fromIndex]];
+    reordered.forEach((value, index) => {
+      hierarchyOrder.section[hierarchyOrderKey(...parent, value)] = (index + 1) * 10;
+    });
+  }, { saveDisk: true });
+  renderEmployees();
 }
 function openShiftRotationSettings() {
     openSettingsChild('shift-rotation-settings-modal', 'settings-modal');
@@ -1705,12 +1711,7 @@ function holidayTriggerContains(target) {
   return !!(menu && menu.contains(target));
 }
 window.addEventListener('resize', () => {
-  const nextActivityPageSize = activityPageCapacity();
-  if (nextActivityPageSize !== activityPageSize) {
-    activityPageSize = nextActivityPageSize;
-    activityPageOffset = Math.floor(activityPageOffset / activityPageSize) * activityPageSize;
-    if (currentPage === 'grid' && document.getElementById('gtbody')) renderGridBody(scheduleDays(), todayStr());
-  }
+  if (currentPage === 'grid') renderGridBody(scheduleDays(), todayStr());
   const popover = document.getElementById('holiday-add-popover');
   if (!popover || !popover.classList.contains('open')) return;
   const trigger = document.querySelector('#holiday-add-menu button.icon-btn');
@@ -1770,6 +1771,7 @@ async function confirmHolidayImport() {
 }
 async function saveSettings() {
   const name = document.getElementById('set-app-name').value.trim();
+  const defaultPersonnelOrganisation = document.getElementById('set-default-personnel-organisation').value.trim().slice(0, 120);
   const securityLabel = normalizeSecurityLabel({
     enabled: document.getElementById('set-security-label-enabled').checked,
     text: document.getElementById('set-security-label-text').value,
@@ -1778,10 +1780,11 @@ async function saveSettings() {
   const showRank = document.getElementById('set-show-level-rank')?.checked;
   const workwheelEnabled = document.getElementById('set-workwheel-enabled')?.checked === true;
   const workwheelUpcomingDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-workwheel-upcoming-days')?.value) || 14)));
-  const workwheelGridDisplayMode = ['cells', 'both', 'row'].includes(document.getElementById('set-workwheel-grid-display')?.value) ? document.getElementById('set-workwheel-grid-display').value : 'cells';
+  const workwheelGridDisplayMode = ['cells', 'both', 'row', 'none'].includes(document.getElementById('set-workwheel-grid-display')?.value) ? document.getElementById('set-workwheel-grid-display').value : 'cells';
   const myScheduleLookaheadDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-my-schedule-lookahead-days')?.value) || 31)));
   await mutateState('saveSettings', () => {
     if (name) appSettings.appName = name;
+    appSettings.defaultPersonnelOrganisation = defaultPersonnelOrganisation;
     appSettings.securityLabel = securityLabel;
     if (typeof showRank === 'boolean') appSettings.showLevelRankInSchedule = showRank;
     appSettings.workwheelEnabled = workwheelEnabled;
@@ -1805,7 +1808,6 @@ function normalizeActivityStatusFilter(value, legacyConfirmedOnly = false) {
 function setActivityStatusFilter(value) {
   appSettings.activityStatusFilter = normalizeActivityStatusFilter(value);
   appSettings.showOnlyConfirmedActivities = appSettings.activityStatusFilter === 'confirmed';
-  activityPageOffset = 0;
   persistSettings();
   renderPage();
   if (appSettings.jumpToTodayOnGridChange !== false && appSettings.activityStatusFilter !== 'all') {
@@ -1823,9 +1825,17 @@ function setGridViewMode(mode) {
 function setScheduleSectionFilter(value) {
   scheduleSectionFilter = String(value || '');
   hiddenEmployees = new Set([...hiddenEmployees].filter(id => sortedEmployees().some(employee => employee.id === id)));
-  activityPageOffset = 0;
   saveGridPreferences();
   renderPage();
+}
+function toggleScheduleEmployeeHighlight(employeeId) {
+  highlightedScheduleEmployeeId = highlightedScheduleEmployeeId === Number(employeeId) ? null : Number(employeeId);
+  document.querySelectorAll('.schedule-employee-row').forEach(row => {
+    const highlighted = Number(row.dataset.employeeId) === highlightedScheduleEmployeeId;
+    row.classList.toggle('employee-row-highlight', highlighted);
+    const name = row.querySelector('.emp-name');
+    if (name) name.setAttribute('aria-pressed', String(highlighted));
+  });
 }
 function toggleGridSection(section) {
   if (!Object.prototype.hasOwnProperty.call(collapsedGridSections, section)) return;
@@ -1849,10 +1859,6 @@ function jumpToFirstVisibleActivity() {
     const latestPast = pastMatches.at(-1);
     if (!latestPast) return;
     pastActivitiesExpanded = true;
-    const pageSize = gridViewMode !== 'timeline' ? activityPageCapacity() : Math.max(1, pastMatches.length);
-    activityPageOffset = gridViewMode !== 'timeline'
-      ? Math.floor((pastMatches.length - 1) / pageSize) * pageSize
-      : 0;
     renderPage();
     setTimeout(() => jumpToActivity(latestPast.id), 120);
     return;
@@ -2861,14 +2867,20 @@ let summaryMonthValue = `${summaryYear}-${String(new Date().getMonth() + 1).padS
 let summaryWeekValue = isoWeekStringFromDate(new Date());
 let workloadPeriod = 'year';
 let workloadAnchorDate = fmt(new Date());
+let dashboardRosterSort = 'department';
+let dashboardScopeFilter = lsGet('teamManagerDashboardScope') || '';
 let boardYear = new Date().getFullYear();
-let boardFilters = { dept: '', status: 'all', search: '' };
+let boardFilters = { dept: '', section: '', status: 'all', search: '' };
+let statusBoardSubview = 'training';
 let summarySortKey = 'people', summarySortDir = 'asc';
 let summaryViewMode = 'table';
+let summarySelectedEmployeeIds = null;
 let summaryGraphMetric = 'total';
 let summaryGraphMeasure = 'hours';
 let summaryGraphDir = 'desc';
 let summaryColumnsDraft = null;
+let collapsedSummaryTeams = new Set();
+let summaryGlobalRankingCollapsed = false;
 let empSearch = '', empFilterDept = '', empFilterCatId = null;
 let inactivePersonnelCollapsed = true;
 let scheduleSectionFilter = '';
@@ -2882,13 +2894,12 @@ let hiddenEmployees = new Set();
 let hiddenEmployeesDraft = null;
 let inactiveEmployeeDisplayMode = 'greyed';
 let pastActivitiesExpanded = false;
+let highlightedScheduleEmployeeId = null;
 let gridViewMode = 'all';
 let gridPeriod = 'year';
 let scheduleAnchorDate = todayStr();
 let appZoom = 100;
 let collapsedGridSections = { activities: false, holidays: false, employees: false };
-let activityPageOffset = 0;
-let activityPageSize = activityPageCapacity();
 
 let employees = [], categories = [], statuses = [], activities = [], courses = [], courseStatuses = {}, requirements = [], requirementRecords = {};
 let departmentOrder = {}, subdepartmentOrder = {}, hierarchyOrder = normalizeHierarchyOrderTree();
@@ -2910,9 +2921,59 @@ let suppressActivityCellClick = false;
 let pendingRangeSelection = null;
 let editingEmpId = null, editingActId = null, editingStatusId = null, editingDailyStatusId = null, editingCatId = null, editingShiftTemplateId = null;
 let selectedActColor = PALETTE[0], selectedParticipants = [], selectedStatusColor = PALETTE[0], selectedDailyStatusColor = PALETTE[0], selectedWorkCodeColor = '#3b82f6', selectedCatColor = PALETTE[7], selectedEmpCatIds = [];
+let selectedPersonnelIds = new Set();
 let hasUnsavedChanges = false;
 let undoStack = [];
 let redoStack = [];
+let activityPageOffset = 0;
+
+function activityPageCapacity() {
+  // Cap the activity panel at 12 rows, scaling down for shorter viewports.
+  return Math.max(6, Math.min(12, Math.floor((window.innerHeight - 420) / 42)));
+}
+function scheduleActivityWindow() {
+  const { start, end } = scheduleRange();
+  const today = todayStr();
+  const filter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
+  const candidates = activities
+    .filter(activity => activity.startDate <= end && activity.endDate >= start && activityVisibleForScheduleSection(activity))
+    .filter(activity => (filter === 'all' || activityStatus(activity) === filter)
+      && (gridViewMode === 'timeline' || pastActivitiesExpanded || activity.endDate >= today))
+    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
+  const pageSize = activityPageCapacity();
+  const maxOffset = Math.max(0, candidates.length - pageSize);
+  activityPageOffset = Math.min(Math.max(0, activityPageOffset), maxOffset);
+  const visible = gridViewMode === 'timeline'
+    ? candidates
+    : candidates.slice(activityPageOffset, activityPageOffset + pageSize);
+  return { candidates, pageSize, maxOffset, visible };
+}
+function setActivityWindowForId(activityId, alignEnd = false) {
+  const { candidates, pageSize, maxOffset } = scheduleActivityWindow();
+  const index = candidates.findIndex(activity => Number(activity.id) === Number(activityId));
+  if (index < 0) return false;
+  activityPageOffset = Math.min(Math.max(0, index - (alignEnd ? pageSize - 1 : Math.floor(pageSize / 3))), maxOffset);
+  return true;
+}
+
+function activityPageOffsetFor(direction) {
+  const { pageSize, maxOffset } = scheduleActivityWindow();
+  return Math.min(Math.max(0, activityPageOffset + direction), maxOffset);
+}
+
+function changeActivityPage(direction) {
+  const nextOffset = activityPageOffsetFor(direction);
+  if (nextOffset === activityPageOffset) return false;
+  activityPageOffset = nextOffset;
+  const scroll = document.getElementById('grid-scroll');
+  const horizontalPosition = scroll?.scrollLeft || 0;
+  renderGridBody(scheduleDays(), todayStr());
+  requestAnimationFrame(() => {
+    const updatedScroll = document.getElementById('grid-scroll');
+    if (updatedScroll) updatedScroll.scrollLeft = horizontalPosition;
+  });
+  return true;
+}
 let checkUndoStack = [];
 let checkRedoStack = [];
 let autoSaveTimer = null;
@@ -3148,6 +3209,7 @@ function loadFromData(data) {
       : (joinCatIds[+e.id] || []),
     sortOrder: normalizeEmployeeSortOrder(e.sortOrder),
     inactive: e.inactive === true,
+    inactiveReason: String(e.inactiveReason || '').trim().slice(0, 240),
   }));
   ensureEmployeeSortOrders(employees);
   ensureDepartmentOrders();
@@ -3779,7 +3841,7 @@ function activityShiftHours(act, empId, date) {
   const assignment = activityAssignment(`${empId}_${date}_${act.id}`);
   if (!assignment.assigned || assignment.excluded || !assignment.shift) return 0;
   const shiftStr = assignment.shift || 'normal';
-  if (shiftStr === 'turn') return 0;
+  if (shiftStr === 'turn') return 24;
   if (['normal', 'day', 'evening', 'night'].includes(shiftStr)) {
     return timeRangeHours(activityDefaultShift(shiftStr, act)) ?? 0;
   }
@@ -3793,16 +3855,20 @@ function activityShiftMeta(act, shift) {
   if (shift === 'turn') return { key: 'turn', label: 'Turnaround', range: '', icon: shiftChangeIcon('Turnaround') };
   return shift ? { key: shift, label: 'Custom', range: shift, icon: '' } : null;
 }
+function activityPhysicalShift(act, assignment) {
+  const shift = activityShiftMeta(act, assignment?.shift);
+  if (!shift) return '';
+  return `${shift.label}${shift.range ? ` (${shift.range})` : ''}`;
+}
 function activityAssignmentInfo(act, empId, date) {
   if (activityStatus(act) !== 'confirmed') return null;
   const assignment = activityAssignment(`${empId}_${date}_${act.id}`);
   const workCode = (appSettings.workCodes || []).find(code => code.id === assignment.workCodeId)
     || (assignment.shift === 'normal' ? { id: null, name: 'Normal Working Hours', abbreviation: 'NA', color: act.color } : null);
   if (!assignment.assigned || assignment.excluded || !assignment.shift || !workCode) return null;
-  const shiftMeta = activityShiftMeta(act, assignment.shift);
-  const physicalShift = ['normal', 'day', 'evening', 'night'].includes(assignment.shift)
-    ? `${shiftMeta.label} (${shiftMeta.range})`
-    : (assignment.shift === 'turn' ? shiftMeta.label : (assignment.shift || 'Not specified'));
+  const physicalShift = ['normal', 'day', 'evening', 'night', 'turn'].includes(assignment.shift)
+    ? activityPhysicalShift(act, assignment)
+    : (assignment.shift || 'Not specified');
   const administrativeMeasure = activityAdministrativeMeasure(act, empId, date);
   const administrativeValue = formatCompactMeasure(administrativeMeasure.units, administrativeMeasure.hours);
   return { assignment, workCode, physicalShift, physicalHours: activityShiftHours(act, empId, date), administrativeMeasure, administrativeValue };
@@ -3840,6 +3906,9 @@ function activityTypeMeta(act) {
   if (!typeKey) return null;
   const type = (appSettings.activityTypes || []).find(item => item.key === typeKey);
   return type ? { ...type, label: type.name, abbr: type.abbreviation } : (siFor(typeKey) || null);
+}
+function activityDisplayColor(activity) {
+  return activity?.color || '#3b82f6';
 }
 function activityAssignment(key) {
   const value = activityShiftsMap[key];
@@ -3931,20 +4000,22 @@ function processColorKey(dept, section, process) { return `${dept}\u0000${sectio
 function subdepartmentOrderKey(dept, subdept) { return `${dept}\u0000${subdept}`; }
 function hierarchyOrderKey(...parts) { return parts.map(value => String(value || '')).join('\u0000'); }
 function hierarchyValue(employee, level) {
-  if (level === 'department') return employee.department || 'Unassigned department';
+  if (level === 'department') return employee.department || (employeeSection(employee) ? 'Independent sections' : 'Unassigned department');
   if (level === 'section') return employee.section || employee.subdepartment || 'Unassigned section';
   if (level === 'process') return employee.process || 'Unassigned process';
   return employee.team || 'Unassigned team';
 }
 function hierarchyParentPath(employee, level) {
   const organisation = employee.organisation || 'Unassigned organisation';
+  const hasDepartment = String(employee.department || '').trim() !== '';
   const department = hierarchyValue(employee, 'department');
   const section = hierarchyValue(employee, 'section');
   const process = hierarchyValue(employee, 'process');
+  const sectionParentDepartment = !hasDepartment && employeeSection(employee) ? 'Independent sections' : department;
   if (level === 'department') return [organisation, department];
-  if (level === 'section') return [organisation, department, section];
-  if (level === 'process') return [organisation, department, section, process];
-  return [organisation, department, section, process, hierarchyValue(employee, 'team')];
+  if (level === 'section') return [organisation, sectionParentDepartment, section];
+  if (level === 'process') return [organisation, sectionParentDepartment, section, process];
+  return [organisation, sectionParentDepartment, section, process, hierarchyValue(employee, 'team')];
 }
 function hierarchyOrderFor(level, parentPath, value) {
   return Number(hierarchyOrder[level]?.[hierarchyOrderKey(...parentPath, value)]) || 9999;
@@ -3955,9 +4026,12 @@ function compareHierarchyAssignment(left, right) {
   return leftUnassigned === rightUnassigned ? 0 : leftUnassigned ? -1 : 1;
 }
 function compareAssignedHierarchyValues(level, parentPath, left, right) {
-  return compareHierarchyAssignment(left, right) ||
-    hierarchyOrderFor(level, parentPath, left) - hierarchyOrderFor(level, parentPath, right) ||
-    String(left || '').localeCompare(String(right || ''), 'nb', { sensitivity: 'base' });
+  const unassignedLabel = `Unassigned ${level}`;
+  const leftValue = String(left || '').trim() || unassignedLabel;
+  const rightValue = String(right || '').trim() || unassignedLabel;
+  return compareHierarchyAssignment(leftValue, rightValue) ||
+    hierarchyOrderFor(level, parentPath, leftValue) - hierarchyOrderFor(level, parentPath, rightValue) ||
+    leftValue.localeCompare(rightValue, 'nb', { sensitivity: 'base' });
 }
 function migrateHierarchyOrderTree() {
   hierarchyOrder = normalizeHierarchyOrderTree(hierarchyOrder);
@@ -3974,7 +4048,8 @@ function migrateHierarchyOrderTree() {
     for (const { parent, values } of groups.values()) {
       const ordered = [...values].sort((a, b) => {
         if (level === 'department' && !hierarchyOrder[level][hierarchyOrderKey(...parent, a)]) return (departmentOrder[a] ?? 9999) - (departmentOrder[b] ?? 9999);
-        if (level === 'section' && !hierarchyOrder[level][hierarchyOrderKey(...parent, a)]) return (subdepartmentOrder[subdepartmentOrderKey(parent[1], a)] ?? 9999) - (subdepartmentOrder[subdepartmentOrderKey(parent[1], b)] ?? 9999);
+        if (level === 'section') return compareAssignedHierarchyValues('section', parent, a, b) ||
+          ((subdepartmentOrder[subdepartmentOrderKey(parent[1], a)] ?? 9999) - (subdepartmentOrder[subdepartmentOrderKey(parent[1], b)] ?? 9999));
         if (level === 'process') return (Math.min(...employees.filter(e => hierarchyValue(e, level) === a).map(e => Number(e.processOrder) || Number(e.sortOrder) || 9999))) - (Math.min(...employees.filter(e => hierarchyValue(e, level) === b).map(e => Number(e.processOrder) || Number(e.sortOrder) || 9999)));
         return a.localeCompare(b, 'nb', { sensitivity: 'base' });
       });
@@ -4089,19 +4164,21 @@ function compareScheduleGroups(left, right) {
   const rightEmp = right.emps?.[0] || {};
   const organisationComparison = compareHierarchyAssignment(leftEmp.organisation, rightEmp.organisation) || String(leftEmp.organisation || '').localeCompare(String(rightEmp.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
-  const departmentComparison = compareAssignedHierarchyValues('department', [leftEmp.organisation || 'Unassigned organisation'], leftEmp.department || 'Unassigned department', rightEmp.department || 'Unassigned department');
+  const leftDepartment = hierarchyValue(leftEmp, 'department');
+  const rightDepartment = hierarchyValue(rightEmp, 'department');
+  const departmentComparison = compareAssignedHierarchyValues('department', [leftEmp.organisation || 'Unassigned organisation'], leftDepartment, rightDepartment);
   if (departmentComparison) return departmentComparison;
-  const leftSection = leftEmp.section || leftEmp.subdepartment || '';
-  const rightSection = rightEmp.section || rightEmp.subdepartment || '';
-  if (!leftSection && rightSection) return -1;
-  if (leftSection && !rightSection) return 1;
-  const sectionComparison = compareAssignedHierarchyValues('section', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department'], leftSection, rightSection);
+  const leftSection = hierarchyValue(leftEmp, 'section');
+  const rightSection = hierarchyValue(rightEmp, 'section');
+  const sectionComparison = compareAssignedHierarchyValues('section', [leftEmp.organisation || 'Unassigned organisation', leftDepartment], leftSection, rightSection);
   if (sectionComparison) return sectionComparison;
-  const processComparison = compareAssignedHierarchyValues('process', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department', leftSection], leftEmp.process, rightEmp.process);
+  const leftProcess = hierarchyValue(leftEmp, 'process');
+  const rightProcess = hierarchyValue(rightEmp, 'process');
+  const processComparison = compareAssignedHierarchyValues('process', [leftEmp.organisation || 'Unassigned organisation', leftDepartment, leftSection], leftProcess, rightProcess);
   if (processComparison) return processComparison;
-  const leftTeamOrder = hierarchyOrderFor('team', [leftEmp.organisation || 'Unassigned organisation', leftEmp.department || 'Unassigned department', leftSection, leftEmp.process || 'Unassigned process'], leftEmp.team || 'Unassigned team');
-  const rightTeamOrder = hierarchyOrderFor('team', [rightEmp.organisation || 'Unassigned organisation', rightEmp.department || 'Unassigned department', rightSection, rightEmp.process || 'Unassigned process'], rightEmp.team || 'Unassigned team');
-  const teamComparison = compareHierarchyAssignment(leftEmp.team, rightEmp.team) || leftTeamOrder - rightTeamOrder || String(leftEmp.team || '').localeCompare(String(rightEmp.team || ''), 'nb', { sensitivity: 'base' });
+  const leftTeam = hierarchyValue(leftEmp, 'team');
+  const rightTeam = hierarchyValue(rightEmp, 'team');
+  const teamComparison = compareAssignedHierarchyValues('team', [leftEmp.organisation || 'Unassigned organisation', leftDepartment, leftSection, leftProcess], leftTeam, rightTeam);
   if (teamComparison) return teamComparison;
   const leftPersonnelOrder = Math.min(...(left.emps || []).map(employee => Number(employee.sortOrder) || 9999));
   const rightPersonnelOrder = Math.min(...(right.emps || []).map(employee => Number(employee.sortOrder) || 9999));
@@ -4173,7 +4250,10 @@ function employeeGroupColor(employee, deptColors) {
 function sectionGroupColor(group, deptColors) {
   const employee = group.emps?.[0];
   const section = employee?.section || employee?.subdepartment || '';
-  const sectionColor = resolveSectionColor(group.dept, section) || resolveDeptColor(group.dept);
+  const standaloneSections = [...new Set(employees.filter(item => !item.department && employeeSection(item)).map(employeeSection))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  const standaloneFallback = PALETTE[Math.max(0, standaloneSections.indexOf(section)) % PALETTE.length];
+  const department = employee?.department || '';
+  const sectionColor = resolveSectionColor(department, section) || (department ? resolveDeptColor(department) : standaloneFallback);
   return sectionColor ? { bg: `${sectionColor}22`, accent: sectionColor } : deptColors;
 }
 function employeeHierarchyPath(employee, options = {}) {
@@ -4212,8 +4292,8 @@ function employeeHierarchyLeaf(employee) {
 function comparePersonnelHierarchy(left, right) {
   const organisationComparison = compareHierarchyAssignment(left?.organisation, right?.organisation) || String(left?.organisation || '').localeCompare(String(right?.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
-  const leftDepartment = left?.department || 'Unassigned department';
-  const rightDepartment = right?.department || 'Unassigned department';
+  const leftDepartment = hierarchyValue(left, 'department');
+  const rightDepartment = hierarchyValue(right, 'department');
   const departmentComparison = compareAssignedHierarchyValues('department', [left?.organisation || 'Unassigned organisation'], leftDepartment, rightDepartment);
   if (departmentComparison) return departmentComparison;
   const leftSection = left?.section || left?.subdepartment || 'Unassigned section';
@@ -4230,11 +4310,11 @@ function comparePersonnelHierarchy(left, right) {
 function sortedEmployees() {
   return [...employees].filter(scheduleEmployeeMatchesScope).sort(comparePersonnelHierarchy);
 }
-function deptGroups() {
+function deptGroups(employeeList = employees, applyScheduleFilters = true) {
   const byDept = new Map();
-  for (const emp of employees) {
-    if (hiddenEmployees.has(emp.id) || !scheduleEmployeeMatchesScope(emp) || (emp.inactive === true && inactiveEmployeeDisplayMode === 'hidden')) continue;
-    const department = emp.department || 'Unassigned';
+  for (const emp of employeeList) {
+    if (applyScheduleFilters && (hiddenEmployees.has(emp.id) || !scheduleEmployeeMatchesScope(emp) || (emp.inactive === true && inactiveEmployeeDisplayMode === 'hidden'))) continue;
+    const department = emp.department || (employeeSection(emp) ? 'Independent sections' : 'Unassigned');
     const subdepartment = employeeHierarchyLeaf(emp);
     const key = `${department}\u0000${subdepartment}`;
     if (!byDept.has(key)) byDept.set(key, { department, subdepartment, emps: [] });
@@ -4996,7 +5076,7 @@ function renderGrid() {
       : 36;
   const today = todayStr();
   const scheduleSections = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
-  const scheduleDepartments = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  const scheduleDepartments = [...new Set(employees.map(employee => String(employee.department || (employeeSection(employee) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
 
   let monthCells = '', weekCells = '', dayCells = '';
   let mLabel = '', mCount = 0, mIndex = 0;
@@ -5174,15 +5254,9 @@ function renderGridBody(days, today) {
     : yearActs.filter(a => activityStatus(a) === activityFilter);
   const currentActs = filteredYearActs.filter(a => a.endDate >= today);
   const pastActs = filteredYearActs.filter(a => a.endDate < today);
-  const visibleActivities = [...(pastActivitiesExpanded ? pastActs : []), ...currentActs].sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
-  const paginateActivities = gridViewMode !== 'timeline' && visibleActivities.length > activityPageCapacity();
-  const pageSize = gridViewMode === 'timeline' ? Math.max(1, visibleActivities.length) : activityPageCapacity();
-  activityPageSize = pageSize;
-  const maxOffset = paginateActivities ? Math.max(0, visibleActivities.length - pageSize) : 0;
-  activityPageOffset = paginateActivities ? Math.min(activityPageOffset, maxOffset) : 0;
-  const activityPage = paginateActivities ? visibleActivities.slice(activityPageOffset, activityPageOffset + pageSize) : visibleActivities;
-  const pageStart = visibleActivities.length ? activityPageOffset + 1 : 0;
-  const pageEnd = paginateActivities ? Math.min(activityPageOffset + pageSize, visibleActivities.length) : visibleActivities.length;
+  const activityWindow = scheduleActivityWindow();
+  const allVisibleActivities = activityWindow.candidates;
+  const visibleActivities = activityWindow.visible;
   const plannerYearStart = `${gridYear}-01-01`;
   const plannerYearEnd = `${gridYear}-12-31`;
   const plannerYearActs = activities.filter(activity => activity.startDate <= plannerYearEnd && activity.endDate >= plannerYearStart && activityVisibleForScheduleSection(activity));
@@ -5196,12 +5270,14 @@ function renderGridBody(days, today) {
 
   // ── Activities section ────────────────────────────────────────
   if (showTimelineSections) {
+    const pageEnd = Math.min(activityPageOffset + activityWindow.pageSize, allVisibleActivities.length);
+    const paginateActivities = gridViewMode !== 'timeline' && allVisibleActivities.length > activityWindow.pageSize;
     html += `<tr class="sect-row"><td class="sticky-left schedule-activities-header" style="z-index:60">
         <span class="schedule-section-header">
           <span class="flex items-center" style="gap:5px;font-size:10px"><button class="icon-btn" title="${collapsedGridSections.activities ? 'Expand activities' : 'Collapse activities'}" aria-label="${collapsedGridSections.activities ? 'Expand activities section' : 'Collapse activities section'}" aria-expanded="${collapsedGridSections.activities ? 'false' : 'true'}" onclick="toggleGridSection('activities')">${svgIcon(collapsedGridSections.activities ? 'chevronRight' : 'chevronDown')}</button>Activities <span class="schedule-activity-count">(${activityHeadingText})</span></span>
           <span class="schedule-section-controls" style="gap:6px">
-            ${paginateActivities ? `<button class="icon-btn" title="Scroll to previous activity" aria-label="Scroll to previous activity" ${activityPageOffset === 0 ? 'disabled' : ''} onclick="changeActivityPage(-1)">${svgIcon('chevronUp')}</button>
-            <button class="icon-btn" title="Scroll to next activity" aria-label="Scroll to next activity" ${pageEnd >= visibleActivities.length ? 'disabled' : ''} onclick="changeActivityPage(1)">${svgIcon('chevronDown')}</button>` : ''}
+            ${paginateActivities ? `<button class="icon-btn" title="Show earlier activities" aria-label="Show earlier activities" ${activityPageOffset === 0 ? 'disabled' : ''} onclick="changeActivityPage(-1)">${svgIcon('chevronUp')}</button>
+            <button class="icon-btn" title="Show later activities" aria-label="Show later activities" ${pageEnd >= allVisibleActivities.length ? 'disabled' : ''} onclick="changeActivityPage(1)">${svgIcon('chevronDown')}</button>` : ''}
             <button class="icon-btn" title="Team Work Schedule" aria-label="Team Work Schedule" onclick="openTeamScheduleReport()">${svgIcon('teamSchedule')}</button>
             <button class="icon-btn" title="Activity Schedule" aria-label="Activity Schedule" onclick="openActivityScheduleReport()">${svgIcon('report')}</button>
             <button class="icon-btn" title="Add activity" aria-label="Add activity" onclick="openActModal()">${svgIcon('plus')}</button>
@@ -5220,17 +5296,18 @@ function renderGridBody(days, today) {
     const attendCount = act.participants.length;
     const lifecycle = activityStatusMeta(act);
     const typeMeta = activityTypeMeta(act);
+    const activityColor = activityDisplayColor(act);
     const lifecycleBadge = lifecycle.status === 'confirmed' ? '' : `<span class="act-lifecycle ${lifecycle.className}">${lifecycle.label}</span>`;
     const barBackground = lifecycle.status === 'tentative'
-      ? `repeating-linear-gradient(135deg,color-mix(in srgb,${act.color} 38%,transparent) 0 5px,color-mix(in srgb,${act.color} 12%,transparent) 5px 10px)`
-      : act.color;
+      ? `repeating-linear-gradient(135deg,color-mix(in srgb,${activityColor} 38%,transparent) 0 5px,color-mix(in srgb,${activityColor} 12%,transparent) 5px 10px)`
+      : activityColor;
     const barOpacity = lifecycle.status === 'tentative' ? '.9' : (dim ? '.16' : '.28');
     let row = `<tr class="activity-grid-row"><td class="gempl sticky-left" style="${dim ? 'opacity:.65;' : ''}cursor:pointer" onclick="openActModal(${act.id})" title="${esc(act.name)}${typeMeta ? ` · ${esc(typeMeta.label)}` : ''}\nClick to edit">
       <div class="act-cell-name">
         <span class="flex items-center gap-2" style="min-width:0">
-          <span class="act-dot" style="background:${act.color}"></span>
+          <span class="act-dot" style="background:${activityColor}"></span>
           <span class="act-name" role="button" tabindex="0" title="Jump to ${esc(act.name)}" onclick="event.stopPropagation();jumpToActivity(${act.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();jumpToActivity(${act.id})}"${lifecycle.status === 'cancelled' ? ' style="text-decoration:line-through;text-decoration-color:var(--destructive);text-decoration-thickness:2px;"' : ''}>${esc(activityDisplayName(act))}</span>
-          ${act.abbreviation ? `<span style="font-size:10px;font-weight:700;color:${act.color};flex-shrink:0">[${esc(act.abbreviation)}]</span>` : ''}
+          ${act.abbreviation ? `<span style="font-size:10px;font-weight:700;color:${activityColor};flex-shrink:0">[${esc(act.abbreviation)}]</span>` : ''}
           ${lifecycleBadge}
         </span>
         <span class="act-cell-actions">
@@ -5256,7 +5333,7 @@ function renderGridBody(days, today) {
         const brl = isS ? '4px 0 0 4px' : '0', brr = isE ? '0 4px 4px 0' : '0';
         row += `<td class="gday act-bar-cell activity-select-cell${isWknd(d) ? ' weekend' : ''}${ds === today ? ' today-col' : ''}${calendarHoliday ? ' holiday-col' : ''}${isS ? ' span-label-cell' : ''}" data-row-key="act-${act.id}" data-date="${ds}" style="--holiday-color:${calendarHoliday?.color || '#ef4444'};height:28px;${specialDayStyle}${planningHorizonStyle(ds)}" onpointerdown="startActivityRangeSelection(event,'act-${act.id}','${ds}')" onclick="handleActivityCellClick(event,${act.id})" title="${esc(act.name)}${typeMeta ? ` · ${esc(typeMeta.label)}` : ''} · ${fmtMed(act.startDate)} – ${fmtMed(act.endDate)}${act.notes ? '\n' + esc(act.notes) : ''}\nAttending: ${act.participants.map(p => empById(p.id)?.name).filter(Boolean).map(esc).join(', ') || '—'}\nClick to edit">
           <div class="act-bar${lifecycle.status === 'cancelled' ? ' cancelled-bar' : ''}" style="position:absolute;top:4px;bottom:4px;left:${isS ? '3px' : '0'};right:${isE ? '3px' : '0'};background:${barBackground};opacity:${barOpacity};border-radius:${brl} ${brr}"></div>
-          ${isS ? `<span class="grid-span-label" title="${esc(act.name)}" style="color:${act.color};width:${labelWidth}px;${dim ? 'opacity:.6' : ''}">${esc(activityDisplayName(act))}${lifecycle.status === 'confirmed' ? '' : (lifecycle.status === 'cancelled' ? `<span class="grid-span-status cancelled">${lifecycle.label}</span>` : ` · ${lifecycle.label}`)}</span>` : ''}
+          ${isS ? `<span class="grid-span-label" title="${esc(act.name)}" style="color:${activityColor};width:${labelWidth}px;${dim ? 'opacity:.6' : ''}">${esc(activityDisplayName(act))}${lifecycle.status === 'confirmed' ? '' : (lifecycle.status === 'cancelled' ? `<span class="grid-span-status cancelled">${lifecycle.label}</span>` : ` · ${lifecycle.label}`)}</span>` : ''}
         </td>`;
       } else {
         row += `<td class="gday activity-select-cell${isWknd(d) ? ' weekend' : ''}${ds === today ? ' today-col' : ''}${calendarHoliday ? ' holiday-col' : ''}" data-row-key="act-${act.id}" data-date="${ds}" style="--holiday-color:${calendarHoliday?.color || '#ef4444'};height:28px;${specialDayStyle}${planningHorizonStyle(ds)}" onpointerdown="startActivityRangeSelection(event,'act-${act.id}','${ds}')" onclick="handleActivityCellClick(event,${act.id})"></td>`;
@@ -5265,7 +5342,7 @@ function renderGridBody(days, today) {
     return row + '</tr>';
   };
   if (showTimelineSections && !collapsedGridSections.activities && hasAnyActivities) {
-    activityPage.forEach(act => { html += renderActRow(act, act.endDate < today); });
+    visibleActivities.forEach(act => { html += renderActRow(act, act.endDate < today); });
   }
 
   const yearHolidays = holidayPeriodsForRange(range.start, range.end);
@@ -5350,9 +5427,10 @@ function renderGridBody(days, today) {
               emp.process || '',
             ) || (teamName ? resolveSubdepartmentColor(emp.department || 'Unassigned', teamName) : null) || colors.accent;
             const employeeRowColors = { bg: `${employeeColors}22`, accent: employeeColors };
-            html += `<tr class="${greyedOut ? 'inactive-schedule-row' : ''}"><td class="gempl sticky-left" style="background:linear-gradient(${employeeRowColors.bg},${employeeRowColors.bg}),var(--surface);border-right:2px solid var(--border) !important">
-              <div class="flex items-center justify-between gap-2"><div class="emp-name">${displayEmployeeNameMarkup(emp)}${inactive ? '<span class="inactive-schedule-badge">Inactive</span>' : ''}</div></div>
-              <div class="emp-sub">${esc(emp.role || '')}</div>
+            const highlighted = highlightedScheduleEmployeeId === emp.id;
+            html += `<tr class="schedule-employee-row${greyedOut ? ' inactive-schedule-row' : ''}${highlighted ? ' employee-row-highlight' : ''}" data-employee-id="${emp.id}"><td class="gempl sticky-left" style="background:linear-gradient(${employeeRowColors.bg},${employeeRowColors.bg}),var(--surface);border-right:2px solid var(--border) !important">
+              <div class="flex items-center justify-between gap-2"><div class="emp-name" role="button" tabindex="0" aria-pressed="${highlighted}" title="Highlight ${esc(emp.name)} across the visible schedule" onclick="toggleScheduleEmployeeHighlight(${emp.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleScheduleEmployeeHighlight(${emp.id})}">${displayEmployeeNameMarkup(emp)}${inactive ? '<span class="inactive-schedule-badge">Inactive</span>' : ''}</div></div>
+              <div class="emp-sub" title="${esc(inactive ? emp.inactiveReason || emp.role || '' : emp.role || '')}">${esc([emp.role, inactive && emp.inactiveReason].filter(Boolean).join(' · '))}</div>
             </td>`;
             for (const d of days) {
               const ds = fmt(d);
@@ -5365,117 +5443,6 @@ function renderGridBody(days, today) {
     }
   }
   tbody.innerHTML = cleanHtml(html);
-  const gridScroll = document.getElementById('grid-scroll');
-  if (gridScroll) lastActivityViewportLeft = gridScroll.scrollLeft;
-}
-
-function activityPageCapacity() {
-  if (window.innerHeight <= 900) return 8;
-  if (window.innerHeight <= 1200) return 9;
-  return 10;
-}
-function changeActivityPage(direction) {
-  const today = todayStr();
-  const { start, end } = scheduleRange();
-  const yearActs = activities.filter(a => a.startDate <= end && a.endDate >= start && activityVisibleForScheduleSection(a));
-  const activityFilter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
-  const filteredYearActs = activityFilter === 'all'
-    ? yearActs
-    : yearActs.filter(a => activityStatus(a) === activityFilter);
-  const currentActs = filteredYearActs.filter(a => a.endDate >= today);
-  const pastActs = filteredYearActs.filter(a => a.endDate < today);
-  const visibleActivities = [...(pastActivitiesExpanded ? pastActs : []), ...currentActs]
-    .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
-  const maxOffset = Math.max(0, visibleActivities.length - activityPageSize);
-  activityPageOffset = Math.min(Math.max(0, activityPageOffset + direction), maxOffset);
-  const targetIndex = direction > 0
-    ? Math.min(visibleActivities.length - 1, activityPageOffset + activityPageSize - 1)
-    : activityPageOffset;
-  const targetActivity = visibleActivities[targetIndex];
-  const targetDate = targetActivity
-    ? (targetActivity.startDate < start ? start : targetActivity.startDate > end ? end : targetActivity.startDate)
-    : null;
-  const scroll = document.getElementById('grid-scroll');
-  renderGridBody(scheduleDays(), todayStr());
-  if (scroll && targetActivity && targetDate) requestAnimationFrame(() => {
-    const cell = scroll.querySelector(`td.activity-select-cell[data-row-key="act-${targetActivity.id}"][data-date="${targetDate}"]`);
-    if (!cell) return;
-    const scrollRect = scroll.getBoundingClientRect();
-    const cellContentLeft = scroll.scrollLeft + cell.getBoundingClientRect().left - scrollRect.left;
-    const stickyWidth = scroll.querySelector('.gtable tbody .sticky-left')?.getBoundingClientRect().width || 240;
-    scroll.scrollLeft = Math.max(0, cellContentLeft - stickyWidth - 12);
-  });
-}
-let activityWheelLocked = false;
-let activityViewportSyncTimer = null;
-let lastActivityViewportLeft = null;
-function syncActivitiesToHorizontalViewport(event) {
-  const scroll = event?.currentTarget || document.getElementById('grid-scroll');
-  if (!scroll || appSettings.autoActivityPageOnHorizontalScroll === false || gridViewMode === 'timeline' || collapsedGridSections.activities || activityRangeSelection.active || cellSelection.active) return;
-  if (lastActivityViewportLeft === null) { lastActivityViewportLeft = scroll.scrollLeft; return; }
-  if (Math.abs(scroll.scrollLeft - lastActivityViewportLeft) < 4) return;
-  lastActivityViewportLeft = scroll.scrollLeft;
-  if (activityViewportSyncTimer) clearTimeout(activityViewportSyncTimer);
-  activityViewportSyncTimer = setTimeout(() => {
-    activityViewportSyncTimer = null;
-    const dateCells = [...scroll.querySelectorAll('thead .gh-day[data-date]')];
-    const sticky = scroll.querySelector('thead .gh-emp.sticky-left');
-    const stickyRight = sticky?.getBoundingClientRect().right ?? scroll.getBoundingClientRect().left;
-    const scrollRect = scroll.getBoundingClientRect();
-    const visibleDates = dateCells.filter(cell => {
-      const rect = cell.getBoundingClientRect();
-      return rect.right > stickyRight + 1 && rect.left < scrollRect.right - 1;
-    }).map(cell => cell.dataset.date).filter(Boolean);
-    if (!visibleDates.length) return;
-    const visibleStart = visibleDates[0], visibleEnd = visibleDates[visibleDates.length - 1];
-    const { start, end } = scheduleRange();
-    const today = todayStr();
-    const filter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
-    const candidates = activities.filter(activity => activity.startDate <= end && activity.endDate >= start && activityVisibleForScheduleSection(activity))
-      .filter(activity => (filter === 'all' || activityStatus(activity) === filter) && (pastActivitiesExpanded || activity.endDate >= today))
-      .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.endDate.localeCompare(b.endDate) || a.name.localeCompare(b.name));
-    let firstMatch = candidates.findIndex(activity => activity.endDate >= visibleStart && activity.startDate <= visibleEnd);
-    if (firstMatch < 0) {
-      if (visibleStart < today && !pastActivitiesExpanded) return;
-      const midpoint = visibleStart <= today && visibleEnd >= today ? today : (visibleStart > today ? visibleStart : visibleEnd);
-      const distanceToViewport = activity => activity.endDate < midpoint
-        ? new Date(`${midpoint}T00:00:00`) - new Date(`${activity.endDate}T00:00:00`)
-        : activity.startDate > midpoint
-          ? new Date(`${activity.startDate}T00:00:00`) - new Date(`${midpoint}T00:00:00`)
-          : 0;
-      const nearest = candidates.map((activity, index) => ({ index, distance: distanceToViewport(activity) }))
-        .sort((a, b) => a.distance - b.distance)[0];
-      if (!nearest) return;
-      firstMatch = nearest.index;
-    }
-    const pageSize = activityPageCapacity();
-    const nextOffset = Math.floor(firstMatch / pageSize) * pageSize;
-    if (nextOffset === activityPageOffset) return;
-    const scrollLeft = scroll.scrollLeft, scrollTop = scroll.scrollTop;
-    activityPageOffset = nextOffset;
-    renderGridBody(scheduleDays(), today);
-    requestAnimationFrame(() => {
-      const updated = document.getElementById('grid-scroll');
-      if (!updated) return;
-      updated.scrollLeft = scrollLeft;
-      updated.scrollTop = scrollTop;
-    });
-  }, 110);
-}
-function handleActivityListWheel(event) {
-  if (gridViewMode === 'timeline' || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !event.target.closest?.('.activity-grid-row')) return;
-  // While the pointer is over an activity row, always swallow vertical wheel
-  // input so the surrounding page never scrolls, even mid-throttle during a
-  // fast scroll burst. Only the page-change action itself is throttled.
-  event.preventDefault();
-  event.stopPropagation();
-  if (activityWheelLocked) return;
-  const direction = event.deltaY > 0 ? 1 : -1;
-  const oldOffset = activityPageOffset;
-  changeActivityPage(direction);
-  if (activityPageOffset === oldOffset) return;
-  activityWheelLocked = true;
-  setTimeout(() => { activityWheelLocked = false; }, 120);
 }
 function scrollToActivityCell(activityId, date) {
   const scroll = document.getElementById('grid-scroll');
@@ -5491,9 +5458,79 @@ function scrollToActivityCell(activityId, date) {
   scrollToActivityCell._timer = setTimeout(() => cell.classList.remove('activity-jump-focus'), 2400);
   return true;
 }
+let activityViewportSyncTimer = null;
+let lastActivityViewportLeft = null;
+
+function syncActivitiesToHorizontalViewport(event, force = false) {
+  const scroll = event?.currentTarget || document.getElementById('grid-scroll');
+  if (!scroll || gridViewMode === 'employees' || gridViewMode === 'timeline' || collapsedGridSections.activities || activityRangeSelection.active || cellSelection.active) return;
+  if (!force && lastActivityViewportLeft !== null && Math.abs(scroll.scrollLeft - lastActivityViewportLeft) < 4) return;
+  lastActivityViewportLeft = scroll.scrollLeft;
+  if (activityViewportSyncTimer) clearTimeout(activityViewportSyncTimer);
+  activityViewportSyncTimer = setTimeout(() => {
+    activityViewportSyncTimer = null;
+    const dateCells = [...scroll.querySelectorAll('thead .gh-day[data-date]')];
+    const sticky = scroll.querySelector('thead .gh-emp.sticky-left');
+    const stickyRight = sticky?.getBoundingClientRect().right ?? scroll.getBoundingClientRect().left;
+    const scrollRect = scroll.getBoundingClientRect();
+    const visibleDates = dateCells
+      .filter(cell => {
+        const rect = cell.getBoundingClientRect();
+        return rect.right > stickyRight + 1 && rect.left < scrollRect.right - 1;
+      })
+      .map(cell => cell.dataset.date)
+      .filter(Boolean);
+    if (!visibleDates.length) return;
+
+    const visibleStart = visibleDates[0];
+    const visibleEnd = visibleDates[visibleDates.length - 1];
+    const { candidates, pageSize, maxOffset } = scheduleActivityWindow();
+    if (!candidates.length) return;
+    const midpoint = (Date.parse(`${visibleStart}T00:00:00`) + Date.parse(`${visibleEnd}T00:00:00`)) / 2;
+    const temporalDistance = activity => {
+      const start = Date.parse(`${activity.startDate}T00:00:00`);
+      const end = Date.parse(`${activity.endDate}T00:00:00`);
+      return Math.abs((start + end) / 2 - midpoint);
+    };
+    const targetIndex = candidates.map((_, index) => index)
+      .reduce((best, index) => temporalDistance(candidates[index]) < temporalDistance(candidates[best]) ? index : best);
+    const innerStart = activityPageOffset + Math.floor(pageSize / 3);
+    const innerEnd = activityPageOffset + pageSize - Math.floor(pageSize / 3);
+    if (targetIndex >= innerStart && targetIndex < innerEnd) return;
+    const nextOffset = Math.min(Math.max(0, targetIndex - Math.floor(pageSize / 3)), maxOffset);
+    if (nextOffset === activityPageOffset) return;
+    activityPageOffset = nextOffset;
+    renderGridBody(scheduleDays(), todayStr());
+  }, 100);
+}
+
+function handleActivityListWheel(event) {
+  const activityRow = event.target.closest?.('.activity-grid-row');
+  if (!activityRow) return;
+  const scroll = event.currentTarget;
+  if (!scroll) return;
+  // A vertical wheel always reveals earlier/later event rows. Sideways date
+  // movement is reserved for horizontal trackpad gestures or Shift+wheel.
+  if (event.deltaX !== 0 || event.shiftKey) {
+    if (scroll.scrollWidth <= scroll.clientWidth) return;
+    const horizontalDelta = event.deltaX || event.deltaY;
+    const maxScrollLeft = scroll.scrollWidth - scroll.clientWidth;
+    const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, scroll.scrollLeft + horizontalDelta));
+    if (nextScrollLeft === scroll.scrollLeft) return;
+    event.preventDefault();
+    scroll.scrollLeft = nextScrollLeft;
+    return;
+  }
+  if (scroll.scrollHeight <= scroll.clientHeight) return;
+  const nextScrollTop = Math.max(0, Math.min(scroll.scrollHeight - scroll.clientHeight, scroll.scrollTop + event.deltaY));
+  if (nextScrollTop === scroll.scrollTop) return;
+  event.preventDefault();
+  scroll.scrollTop = nextScrollTop;
+}
 function jumpToLastPastActivity(pastActivities) {
   if (!Array.isArray(pastActivities) || !pastActivities.length) return;
   const lastPast = [...pastActivities].sort((a, b) => a.endDate.localeCompare(b.endDate) || a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name))[pastActivities.length - 1];
+  if (setActivityWindowForId(lastPast.id, true)) renderGridBody(scheduleDays(), todayStr());
   const { start, end } = scheduleRange();
   const visibleDate = lastPast.endDate < start ? start : (lastPast.endDate > end ? end : lastPast.endDate);
   requestAnimationFrame(() => scrollToActivityCell(lastPast.id, visibleDate));
@@ -5510,7 +5547,6 @@ function updatePastActivitiesToggle() {
 function togglePastActivities() {
   if (pastActivitiesExpanded) {
     pastActivitiesExpanded = false;
-    activityPageOffset = 0;
     updatePastActivitiesToggle();
     renderGridBody(scheduleDays(), todayStr());
     return;
@@ -5521,7 +5557,6 @@ function togglePastActivities() {
   // visible to the user.
   collapsedGridSections.activities = false;
   saveGridPreferences();
-  activityPageOffset = 0;
   updatePastActivitiesToggle();
   const { start, end } = scheduleRange();
   const filter = normalizeActivityStatusFilter(appSettings.activityStatusFilter, appSettings.showOnlyConfirmedActivities);
@@ -5537,10 +5572,9 @@ function jumpToActivity(activityId) {
   const isPast = activity.endDate < todayStr();
   if (isPast && !pastActivitiesExpanded) {
     pastActivitiesExpanded = true;
-    activityPageOffset = 0;
-    jumpToLastPastActivity();
-    return;
+    updatePastActivitiesToggle();
   }
+  if (setActivityWindowForId(activity.id)) renderGridBody(scheduleDays(), todayStr());
   const { start, end } = scheduleRange();
   const visibleDate = activity.endDate < start ? start : (activity.endDate > end ? end : activity.endDate);
   requestAnimationFrame(() => scrollToActivityCell(activity.id, visibleDate));
@@ -5568,9 +5602,10 @@ function cellActivities(empId, ds) {
 }
 function workwheelCellEvents(empId, ds) {
   if (typeof workwheelState === 'undefined') return [];
-  const mode = ['cells', 'both', 'row'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
-  if (mode === 'row') return [];
+  const mode = ['cells', 'both', 'row', 'none'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
+  if (mode === 'row' || mode === 'none') return [];
   return workwheelState.activities.filter(activity => {
+    if (activity.publishToEmployeeGrid !== true) return false;
     const participant = (activity.participantIds || []).map(Number).includes(Number(empId));
     const responsible = activity.responsibleMode !== 'external' && Number(activity.responsibleId) === Number(empId);
     if (!participant && !responsible || !activity.date || ds < activity.date || ds > (activity.endDate || activity.date)) return false;
@@ -5681,7 +5716,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
       detail += `\nCode: ${act.workCode.name} (${act.workCode.abbreviation})\nAdministrative: ${administrativeValue}`;
     }
     else detail += '\nCode: None';
-    if (shift) detail += `\nShift: ${shift.label}${shift.range ? ` (${shift.range})` : ''}`;
+    if (shift) detail += `\nShift: ${activityPhysicalShift(act, act.assignment) || shift.label}`;
     tipParts.push(detail);
   });
   if (si) {
@@ -6181,6 +6216,7 @@ function _showPicker(event, empId, dates) {
           <button class="pk-chip${selectedShift === 'turn' ? ' sel' : ''}" onclick="selectPickerShift(${act.id},'turn')">${shiftChangeIcon('')} Turnaround</button>
           <button class="pk-chip${selectedShift === 'custom' ? ' sel' : ''}" onclick="selectPickerShift(${act.id},'custom')">Custom</button>
         </div><div id="pk-custom-shift-wrap-${act.id}" style="display:${selectedShift === 'custom' ? 'block' : 'none'}"><input class="pk-input" id="pk-custom-shift-${act.id}" type="text" placeholder="1500-2000" value="${esc(selectedShift === 'custom' ? assignment.shift : '')}" oninput="document.getElementById('pk-shifts-${act.id}').dataset.shift=this.value.trim()"><div class="form-hint">Expected format: HHMM-HHMM, for example 1500-2000.</div></div></div>
+          </div><div id="pk-custom-shift-wrap-${act.id}" style="display:${selectedShift === 'custom' ? 'block' : 'none'}"><input class="pk-input" id="pk-custom-shift-${act.id}" type="text" placeholder="1500-2000" value="${esc(selectedShift === 'custom' ? assignment.shift : '')}" oninput="document.getElementById('pk-shifts-${act.id}').dataset.shift=this.value.trim()"><div class="form-hint">Expected format: HHMM-HHMM, for example 1500-2000.</div></div></div>
         <div class="pk-save-row">
           <button class="pk-clear" ${assignment.assigned && !assignment.excluded ? '' : 'disabled'} onclick="clearActivityAssignment(${empId},${act.id})">${assignment.assigned && !assignment.excluded ? `Remove from ${esc(act.abbreviation || act.name)}` : 'Not assigned'}</button>
           <button class="btn btn-sm btn-primary" onclick="saveActivityAssignment(${empId},${act.id})">Set</button>
@@ -6608,8 +6644,6 @@ document.addEventListener('click', e => {
   const picker = document.getElementById('picker');
   if (picker.classList.contains('open') && !picker.contains(e.target)) closePicker();
   if (!holidayTriggerContains(e.target) && !holidayPopoverContains(e.target)) closeHolidayAddMenu();
-  const sortTh = e.target.closest && e.target.closest('th[data-sort]');
-  if (sortTh) setSummarySort(sortTh.dataset.sort);
 });
 
 // ═══ STATUS MANAGER ══════════════════════════════════════════════════════════
@@ -6878,18 +6912,29 @@ function buildParticipantPicker() {
   const count = document.getElementById('af-participant-count');
   count.textContent = `(${selectedParticipants.length} selected)`;
   if (!employees.length) { container.innerHTML = '<div class="muted text-sm" style="padding:8px 10px">Add personnel first to assign participants.</div>'; return; }
-  container.innerHTML = sortedEmployees().map(emp => {
+  const relevance = {
+    departments: [...document.getElementById('af-relevance-departments').selectedOptions].map(option => option.value),
+    sections: [...document.getElementById('af-relevance-sections').selectedOptions].map(option => option.value),
+    processes: [...document.getElementById('af-relevance-processes').selectedOptions].map(option => option.value),
+  };
+  const ordered = sortedEmployees();
+  const eligible = ordered.filter(emp => activityRelevantToEmployee({ relevance }, emp));
+  const eligibleIds = new Set(eligible.map(emp => emp.id));
+  const outsideTargets = ordered.filter(emp => selectedParticipants.some(person => person.id === emp.id) && !eligibleIds.has(emp.id));
+  const renderPerson = (emp, outside = false) => {
     const checked = selectedParticipants.some(p => p.id === emp.id);
-    return `<div class="participant-option${checked ? ' sel' : ''}">
+    return `<div class="participant-option${checked ? ' sel' : ''}${outside ? ' participant-outside-targets' : ''}">
       <label class="participant-head">
         <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleParticipant(${emp.id},this.checked)">
         <span style="min-width:0;flex:1">
           <span style="font-size:13px;font-weight:500">${esc(emp.name)}</span>
-          <small>${esc(emp.role)} · ${esc(emp.department)}</small>
+          <small>${esc(emp.role)} · ${esc(emp.department)}${outside ? ' · Selected outside activity targets' : ''}</small>
         </span>
       </label>
     </div>`;
-  }).join('');
+  };
+  const peopleMarkup = `${eligible.map(emp => renderPerson(emp)).join('')}${outsideTargets.length ? `<div class="participant-filter-note">Selected personnel outside the current targets</div>${outsideTargets.map(emp => renderPerson(emp, true)).join('')}` : ''}`;
+  container.innerHTML = peopleMarkup || '<div class="muted text-sm" style="padding:8px 10px">No personnel match the selected targets.</div>';
 }
 function toggleParticipant(id, checked) {
   if (checked) { if (!selectedParticipants.find(p => p.id === id)) selectedParticipants.push({ id }); }
@@ -6905,12 +6950,13 @@ function openActModal(id) {
   if (currentScope?.level === 'section') relevance.sections = [currentScope.value];
   const departmentOptions = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort();
   const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort();
+  const processOptions = [...new Set(employees.map(employee => String(employee.process || '').trim()).filter(Boolean))].sort();
   const departmentSelect = document.getElementById('af-relevance-departments');
   const sectionSelect = document.getElementById('af-relevance-sections');
+  const processSelect = document.getElementById('af-relevance-processes');
   departmentSelect.innerHTML = departmentOptions.map(value => `<option value="${esc(value)}" ${relevance.departments.includes(value) ? 'selected' : ''}>${esc(value)}</option>`).join('');
   sectionSelect.innerHTML = sectionOptions.map(value => `<option value="${esc(value)}" ${relevance.sections.includes(value) ? 'selected' : ''}>${esc(value)}</option>`).join('');
-  departmentSelect.dataset.previousSelection = relevance.departments.join('\u001f');
-  sectionSelect.dataset.previousSelection = relevance.sections.join('\u001f');
+  processSelect.innerHTML = processOptions.map(value => `<option value="${esc(value)}" ${relevance.processes.includes(value) ? 'selected' : ''}>${esc(value)}</option>`).join('');
   const preset = !act ? pendingActivityPreset : null;
   const today = todayStr();
   const defaultStart = preset?.startDate || (today.startsWith(`${gridYear}-`) ? today : `${gridYear}-01-01`);
@@ -7009,7 +7055,11 @@ async function saveActivity() {
   const eveningShift = document.getElementById('af-evening-shift').value.trim() || '1200-2000';
   const nightShift = document.getElementById('af-night-shift').value.trim() || '0000-0730';
   const includeWeekends = document.getElementById('af-include-weekends').checked;
-  const relevance = { departments: [...document.getElementById('af-relevance-departments').selectedOptions].map(option => option.value), sections: [...document.getElementById('af-relevance-sections').selectedOptions].map(option => option.value) };
+  const relevance = {
+    departments: [...document.getElementById('af-relevance-departments').selectedOptions].map(option => option.value),
+    sections: [...document.getElementById('af-relevance-sections').selectedOptions].map(option => option.value),
+    processes: [...document.getElementById('af-relevance-processes').selectedOptions].map(option => option.value),
+  };
   const prefillCells = document.getElementById('af-prefill-cells').checked === true;
   if (!name) { alert('Activity name is required.'); return; }
   if (Array.from(name).length > 25) { alert('Activity name can be at most 25 characters.'); return; }
@@ -7122,7 +7172,7 @@ function activityReportCellInfo(act, emp, date) {
   const shiftMeta = activityShiftMeta(act, info.assignment.shift);
   const shiftKey = shiftMeta?.key || 'custom';
   const tint = shiftKey === 'night' ? 30 : (shiftKey === 'evening' ? 22 : (shiftKey === 'day' ? 14 : 10));
-  const color = normalizeHexColor(info.workCode.color, normalizeHexColor(act.color, '#2563eb'));
+  const color = normalizeHexColor(info.workCode.color, normalizeHexColor(activityDisplayColor(act), '#2563eb'));
   const baseColor = weekend ? 'var(--weekend-bg)' : 'var(--surface)';
   const shiftIcon = ['day', 'evening', 'night'].includes(shiftKey) ? shiftMeta.icon : '';
   const shiftClass = ['normal', 'day', 'evening', 'night', 'turn'].includes(shiftKey) ? `${shiftKey}-shift` : 'custom-shift';
@@ -7295,7 +7345,7 @@ function teamReportActivities(entries) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 function teamReportBillingSummary(reportActivities) {
-  return `<div style="margin-bottom:15px;padding:10px;background:var(--muted-bg, #f8f9fa);border:1px solid #ccc;font-size:11px"><strong style="display:block;margin-bottom:7px">Billing codes for the period:</strong>${reportActivities.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Activity</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">CC</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Order</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Free text</th></tr></thead><tbody>${reportActivities.map(act => `<tr><td style="padding:5px 7px;border:1px solid #ccc;font-weight:600;color:${act.color || 'inherit'}">${esc(act.name)}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.project || '-')}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.order || '-')}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.billing || '-')}</td></tr>`).join('')}</tbody></table>` : 'No activities in this period'}</div>`;
+  return `<div style="margin-bottom:15px;padding:10px;background:var(--muted-bg, #f8f9fa);border:1px solid #ccc;font-size:11px"><strong style="display:block;margin-bottom:7px">Billing codes for the period:</strong>${reportActivities.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Activity</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">CC</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Order</th><th style="padding:5px 7px;border:1px solid #ccc;text-align:left">Free text</th></tr></thead><tbody>${reportActivities.map(act => `<tr><td style="padding:5px 7px;border:1px solid #ccc;font-weight:600;color:${activityDisplayColor(act) || 'inherit'}">${esc(act.name)}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.project || '-')}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.order || '-')}</td><td style="padding:5px 7px;border:1px solid #ccc">${esc(act.billing || '-')}</td></tr>`).join('')}</tbody></table>` : 'No activities in this period'}</div>`;
 }
 function teamReportShiftRange(act, participant, shift) {
   const shiftType = assignmentShiftType(shift, participant);
@@ -7316,8 +7366,9 @@ function teamReportCellInfo(emp, act, date) {
   const days = info.administrativeMeasure.units;
   const tint = info.assignment.shift === 'night' ? 0.22 : (info.assignment.shift === 'evening' ? 0.18 : 0.12);
   const activityLabel = act.abbreviation || act.name;
+  const activityColor = activityDisplayColor(act);
   return {
-    html: `<div style="display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:${act.color || 'inherit'}"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:${act.color || 'currentColor'};flex:0 0 auto"></span>${esc(activityLabel)}</div><div style="font-weight:700">${esc(info.workCode.abbreviation || info.workCode.name)} (${esc(info.administrativeValue)})</div><div style="font-size:10px;margin-top:2px">${esc(info.physicalShift)}</div>`,
+    html: `<div style="display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:${activityColor || 'inherit'}"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:${activityColor || 'currentColor'};flex:0 0 auto"></span>${esc(activityLabel)}</div><div style="font-weight:700">${esc(info.workCode.abbreviation || info.workCode.name)} (${esc(info.administrativeValue)})</div><div style="font-size:10px;margin-top:2px">${esc(info.physicalShift)}</div>`,
     hours,
     days,
     tint,
@@ -7349,7 +7400,7 @@ function teamReportEntryCellInfo(entry, date) {
 }
 function teamReportActivityLabels(employeeActivities) {
   return employeeActivities.length
-    ? employeeActivities.map(act => `<span style="color:${act.color || 'var(--muted)'}">${esc(act.name)}</span>`).join(' · ')
+    ? employeeActivities.map(act => `<span style="color:${activityDisplayColor(act) || 'var(--muted)'}">${esc(act.name)}</span>`).join(' · ')
     : 'No activities in this period';
 }
 function openTeamScheduleReport() {
@@ -7467,7 +7518,9 @@ function activityScheduleHeaderGroups(dates, keyFor, labelFor, className) {
     if (group && group.key === key) group.span += 1;
     else groups.push({ key, label: labelFor(date), span: 1 });
   }
-  return `<tr class="${className}">${groups.map(group => `<th class="gday" colspan="${group.span}">${esc(group.label)}</th>`).join('')}</tr>`;
+  const weekHeader = className === 'activity-schedule-weeks';
+  const style = weekHeader ? 'text-align:left;padding-left:8px;font-size:12px;font-weight:800;border-left:2px solid #555;background:#e5e7eb' : '';
+  return `<tr class="${className}">${groups.map(group => `<th class="gday" colspan="${group.span}"${style ? ` style="${style}"` : ''}>${esc(group.label)}</th>`).join('')}</tr>`;
 }
 function activityScheduleDateHeaders(dates) {
   return `${activityScheduleHeaderGroups(
@@ -7482,14 +7535,16 @@ function activityScheduleDateHeaders(dates) {
     'activity-schedule-weeks'
   )}<tr class="activity-schedule-days">${dates.map(ds => {
     const date = new Date(`${ds}T00:00:00`);
-    return `<th class="gday${isWknd(date) ? ' weekend' : ''}"><span>${date.toLocaleDateString('en-US', { weekday: 'short' })}</span><div>${date.getDate()}</div></th>`;
+    const weekStart = date.getDay() === 1;
+    return `<th class="gday${isWknd(date) ? ' weekend' : ''}"${weekStart ? ' style="border-left:2px solid #555"' : ''}><span>${date.toLocaleDateString('en-US', { weekday: 'short' })}</span><div>${date.getDate()}</div></th>`;
   }).join('')}</tr>`;
 }
 function activityScheduleBarRow(act, dates) {
   const lifecycle = activityStatusMeta(act);
+  const activityColor = activityDisplayColor(act);
   const barBackground = lifecycle.status === 'tentative'
-    ? `repeating-linear-gradient(135deg,color-mix(in srgb,${act.color} 38%,transparent) 0 5px,color-mix(in srgb,${act.color} 12%,transparent) 5px 10px)`
-    : act.color;
+    ? `repeating-linear-gradient(135deg,color-mix(in srgb,${activityColor} 38%,transparent) 0 5px,color-mix(in srgb,${activityColor} 12%,transparent) 5px 10px)`
+    : activityColor;
   const barOpacity = lifecycle.status === 'tentative' ? '.9' : '.28';
   const visibleStart = dates[0] > act.startDate ? dates[0] : act.startDate;
   const visibleEnd = dates[dates.length - 1] < act.endDate ? dates[dates.length - 1] : act.endDate;
@@ -7499,9 +7554,9 @@ function activityScheduleBarRow(act, dates) {
   let row = `<tr><td class="gempl sticky-left" style="min-width:210px">
     <div class="act-cell-name">
       <span class="flex items-center gap-2" style="min-width:0">
-        <span class="act-dot" style="background:${act.color}"></span>
+        <span class="act-dot" style="background:${activityColor}"></span>
         <span class="act-name" title="${esc(act.name)}">${esc(activityDisplayName(act))}</span>
-        ${act.abbreviation ? `<span style="font-size:10px;font-weight:700;color:${act.color};flex-shrink:0">[${esc(act.abbreviation)}]</span>` : ''}
+        ${act.abbreviation ? `<span style="font-size:10px;font-weight:700;color:${activityColor};flex-shrink:0">[${esc(act.abbreviation)}]</span>` : ''}
         ${lifecycle.status === 'confirmed' ? '' : `<span class="act-lifecycle ${lifecycle.className}">${lifecycle.label}</span>`}
       </span>
     </div>
@@ -7515,7 +7570,7 @@ function activityScheduleBarRow(act, dates) {
     const brl = isS ? '4px 0 0 4px' : '0', brr = isE ? '0 4px 4px 0' : '0';
     row += `<td class="gday${isWknd(d) ? ' weekend' : ''}${isS ? ' span-label-cell' : ''}" style="height:28px${isS ? ';overflow:visible;z-index:4' : ''}">
         <div class="act-bar${lifecycle.status === 'cancelled' ? ' cancelled-bar' : ''}" style="position:absolute;top:4px;bottom:4px;left:${isS ? '3px' : '0'};right:${isE ? '3px' : '0'};background:${barBackground};opacity:${barOpacity};border-radius:${brl} ${brr}"></div>
-        ${isS ? `<span class="grid-span-label" title="${esc(act.name)}" style="color:${act.color};width:${labelWidth}px">${esc(activityDisplayName(act))}${lifecycle.status === 'confirmed' ? '' : (lifecycle.status === 'cancelled' ? `<span class="grid-span-status cancelled">${lifecycle.label}</span>` : ` · ${lifecycle.label}`)}</span>` : ''}
+        ${isS ? `<span class="grid-span-label" title="${esc(act.name)}" style="color:${activityColor};width:${labelWidth}px">${esc(activityDisplayName(act))}${lifecycle.status === 'confirmed' ? '' : (lifecycle.status === 'cancelled' ? `<span class="grid-span-status cancelled">${lifecycle.label}</span>` : ` · ${lifecycle.label}`)}</span>` : ''}
       </td>`;
   }
   return row + '</tr>';
@@ -7540,7 +7595,7 @@ function renderActivityScheduleReport() {
   const secLabel = renderSecurityLabel();
   content.innerHTML = `
     <div style="margin-bottom:14px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px"><div><div style="font-weight:600;font-size:14px">Activity Schedule</div><div class="muted text-sm" style="margin-top:3px">Period: ${fmtMed(start)} – ${fmtMed(end)}</div></div>${secLabel}</div>
-    ${!filtered.length ? '<div class="empty-note" style="padding:24px;text-align:center">No activities match the selected period and filters.</div>' : `<div style="overflow:auto"><table class="gtable"><thead><tr><th class="gempl sticky-left" rowspan="3" style="min-width:210px">Activity</th></tr>${activityScheduleDateHeaders(dates)}</thead><tbody>${filtered.map(act => activityScheduleBarRow(act, dates)).join('')}</tbody></table></div>`}
+    ${!filtered.length ? '<div class="empty-note" style="padding:24px;text-align:center">No activities match the selected period and filters.</div>' : `<div style="overflow:auto"><table class="gtable"><thead><tr><th class="gempl sticky-left" rowspan="3" style="min-width:240px">Activity</th></tr>${activityScheduleDateHeaders(dates)}</thead><tbody>${filtered.map(act => activityScheduleBarRow(act, dates)).join('')}</tbody></table></div>`}
   `;
 }
 function printActivityScheduleReport() {
@@ -7553,15 +7608,28 @@ function printActivityScheduleReport() {
   const secCfg = normalizeSecurityLabel(appSettings.securityLabel);
   const secLabelHtml = secCfg.enabled ? `<span class="security-label" style="--security-label-color:${esc(secCfg.color)}">${esc(secCfg.text)}</span>` : '';
   const sections = [];
-  for (let i = 0; i < dates.length; i += 14) {
-    const chunkDates = dates.slice(i, i + 14);
+  const weekGroups = [];
+  for (const date of dates) {
+    const key = isoWeekStringFromDate(new Date(`${date}T00:00:00`));
+    let group = weekGroups.at(-1);
+    if (!group || group.key !== key) { group = { key, dates: [] }; weekGroups.push(group); }
+    group.dates.push(date);
+  }
+  for (let i = 0; i < weekGroups.length; i += 2) {
+    const chunkDates = weekGroups.slice(i, i + 2).flatMap(group => group.dates);
+    const weekActivities = filtered.filter(activity =>
+      activity.startDate <= chunkDates.at(-1) && activity.endDate >= chunkDates[0]
+      && activity.participants.some(participant => activityHasScheduledShift(activity, participant.id, chunkDates[0], chunkDates.at(-1)))
+    );
+    if (!weekActivities.length) continue;
     sections.push(`<section class="report-section">
       <div class="report-header"><h1>Activity Schedule</h1>${secLabelHtml}</div>
       <div class="period">Period: ${fmtMed(chunkDates[0])} – ${fmtMed(chunkDates[chunkDates.length - 1])}</div>
       <table><thead><tr><th class="employee-column" rowspan="3">Activity</th></tr>${activityScheduleDateHeaders(chunkDates)}</thead>
-      <tbody>${filtered.map(act => activityScheduleBarRow(act, chunkDates)).join('')}</tbody></table>
+      <tbody>${weekActivities.map(act => activityScheduleBarRow(act, chunkDates)).join('')}</tbody></table>
     </section>`);
   }
+  if (!sections.length) sections.push('<section class="report-section"><h1>Activity Schedule</h1><p>No activities match the selected period and filters.</p></section>');
   const printWindow = window.open('', '_blank', 'width=1400,height=900');
   if (!printWindow) { alert('Please allow pop-ups to print the activity schedule.'); return; }
   printWindow.document.write(`<!doctype html><html><head><title>Activity Schedule</title><style>@page{size:landscape;margin:8mm}*{box-sizing:border-box}:root{--muted:#666;--text:#111;--destructive:#dc2626;--surface:#fff}body{font:8px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:0}.report-section{page-break-after:always;break-after:page}.report-section:last-child{page-break-after:auto;break-after:auto}.report-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:5px}.report-header h1{font-size:18px;margin:0}.security-label{display:inline-flex;align-items:center;justify-content:center;padding:3px 10px;border-radius:4px;border:1.5px solid currentColor;background:var(--security-label-color,#16a34a);color:#fff;font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;line-height:1;-webkit-print-color-adjust:exact;print-color-adjust:exact}.period{color:#666;margin-bottom:10px}table{width:100%;border-collapse:collapse;table-layout:fixed}thead{display:table-header-group}th,td{padding:4px 3px;border:1px solid #ddd;text-align:left;vertical-align:top;overflow-wrap:anywhere;position:relative}.employee-column{width:170px}.date-column{width:auto}.muted{color:#666;font-size:8px;margin-top:2px}.weekend{background:var(--weekend-bg)}.act-cell-name{display:flex;flex-direction:column;gap:2px}.act-dot{display:inline-block;width:10px;height:10px;border-radius:50%}.act-lifecycle{padding:1px 4px;border-radius:4px;font-size:8px;font-weight:700;text-transform:uppercase}.act-lifecycle.planned{color:#92400e;background:#fef3c7;border:1px solid #f59e0b}.act-lifecycle.cancelled{color:#b91c1c;background:#fee2e2;border:1px solid #ef4444}.act-bar{position:absolute;top:4px;bottom:4px}.act-bar.cancelled-bar::after{content:'';position:absolute;left:0;right:0;top:50%;height:3px;background:var(--destructive);box-shadow:0 0 0 1px var(--surface);transform:translateY(-50%)}.grid-span-label{position:absolute;left:7px;top:50%;transform:translateY(-50%);font-size:9px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;z-index:5}.grid-span-status.cancelled{color:#b91c1c;background:#fee2e2;border:1px solid #ef4444;font-size:9px;font-weight:800;padding:0 3px;border-radius:3px;margin-left:4px}@media print{*{print-color-adjust:exact;-webkit-print-color-adjust:exact}}</style></head><body>${sections.join('')}</body></html>`);
@@ -7570,8 +7638,27 @@ function printActivityScheduleReport() {
 
 let editingCourseId = null;
 function courseStatusFor(courseId, employeeId) {
-  const record = courseStatuses[`${courseId}_${employeeId}`] || { status: 'not_relevant', plannedDate: '' };
-  return record.status === 'not_taken' ? { ...record, status: 'mandatory' } : record;
+  const course = courses.find(item => Number(item.id) === Number(courseId));
+  const employee = empById(employeeId);
+  if (!course || !employee) return { status: 'not_relevant', plannedDate: '' };
+  // Scope controls the default state. An explicit employee record must override it.
+  const record = courseStatuses[`${courseId}_${employeeId}`];
+  if (!record && !courseAppliesToEmployee(course, employee)) return { status: 'not_relevant', plannedDate: '' };
+  const statusRecord = record || { status: 'mandatory', plannedDate: '' };
+  return statusRecord.status === 'not_taken' ? { ...statusRecord, status: 'mandatory' } : statusRecord;
+}
+function courseAppliesToEmployee(course, employee) {
+  const department = String(course?.department || '').trim();
+  const section = String(course?.section || '').trim();
+  if (department && String(employee?.department || '').trim() !== department) return false;
+  return !section || employeeSection(employee) === section;
+}
+function courseScopeLabel(course) {
+  const department = String(course?.department || '').trim();
+  const section = String(course?.section || '').trim();
+  if (section && department) return `${department} · ${section}`;
+  if (section) return section;
+  return department ? `${department} department` : 'All departments';
 }
 function courseComplianceMeta(status) {
   if (status === 'taken') return { label: 'Taken', color: '#16a34a' };
@@ -7586,16 +7673,46 @@ function openCourseModal(courseId = null) {
   document.getElementById('course-delete-btn').style.display = course ? 'inline-block' : 'none';
   document.getElementById('course-name').value = course?.name || '';
   document.getElementById('course-code').value = course?.code || '';
+  const scopeSelect = document.getElementById('course-scope');
+  const departments = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
+  const departmentOptions = departments.map(department => `<option value="${esc(`department:${encodeURIComponent(department)}`)}">${esc(department)} — entire department</option>`).join('');
+  const sectionOptions = [...new Map(employees.map(employee => [JSON.stringify([String(employee.department || '').trim(), employeeSection(employee)]), { department: String(employee.department || '').trim(), section: employeeSection(employee) }]).filter(([, value]) => value.section)).values()]
+    .sort((a, b) => a.department.localeCompare(b.department, 'nb') || a.section.localeCompare(b.section, 'nb'))
+    .map(scope => `<option value="${esc(`section:${encodeURIComponent(scope.department)}:${encodeURIComponent(scope.section)}`)}">${esc(scope.department ? `${scope.department} — ${scope.section}` : scope.section)}</option>`).join('');
+  scopeSelect.innerHTML = `<option value="all">All departments and sections</option>${departmentOptions}${sectionOptions}`;
+  if (course?.department && course?.section) scopeSelect.value = `section:${encodeURIComponent(course.department)}:${encodeURIComponent(course.section)}`;
+  else if (course?.department) scopeSelect.value = `department:${encodeURIComponent(course.department)}`;
+  else if (course?.section) {
+    const legacyMatch = employees.find(employee => employeeSection(employee) === course.section);
+    scopeSelect.value = legacyMatch ? `section:${encodeURIComponent(String(legacyMatch.department || '').trim())}:${encodeURIComponent(course.section)}` : 'all';
+  } else if (course) scopeSelect.value = 'all';
+  else if (boardFilters.section) {
+    const [department, section] = JSON.parse(decodeURIComponent(boardFilters.section));
+    scopeSelect.value = `section:${encodeURIComponent(department)}:${encodeURIComponent(section)}`;
+  } else if (boardFilters.dept) scopeSelect.value = `department:${encodeURIComponent(boardFilters.dept)}`;
+  else scopeSelect.value = 'all';
   document.getElementById('course-modal').classList.add('open');
 }
 async function saveCourseFromModal() {
   const name = document.getElementById('course-name').value.trim();
   const code = document.getElementById('course-code').value.trim();
+  const selectedScope = document.getElementById('course-scope').value;
+  let department = '';
+  let section = '';
+  if (selectedScope.startsWith('department:')) department = decodeURIComponent(selectedScope.slice('department:'.length));
+  else if (selectedScope.startsWith('section:')) {
+    const [, encodedDepartment = '', encodedSection = ''] = selectedScope.split(':');
+    department = decodeURIComponent(encodedDepartment);
+    section = decodeURIComponent(encodedSection);
+  }
   if (!name) { alert('Course name is required.'); return; }
-  if (courses.some(course => course.id !== editingCourseId && course.name.toLowerCase() === name.toLowerCase())) { alert('A course with this name already exists.'); return; }
+  if (courses.some(course => course.id !== editingCourseId && course.name.toLowerCase() === name.toLowerCase()
+    && String(course.department || '').trim() === department && String(course.section || '').trim() === section)) {
+    alert('A course with this name already exists for the selected scope.'); return;
+  }
   await mutateState('saveCourseFromModal', () => {
-    if (editingCourseId === null) courses.push({ id: Date.now(), name, code });
-    else { const course = courses.find(item => item.id === editingCourseId); if (course) { course.name = name; course.code = code; } }
+    if (editingCourseId === null) courses.push({ id: Date.now(), name, code, department, section });
+    else { const course = courses.find(item => item.id === editingCourseId); if (course) { course.name = name; course.code = code; course.department = department; course.section = section; } }
   });
   closeModal('course-modal'); renderStatusBoard();
 }
@@ -7610,8 +7727,7 @@ async function deleteCourseFromModal() {
 async function saveCourseStatus(courseId, employeeId, status, plannedDate) {
   await mutateState('saveCourseStatus', () => {
     const key = `${courseId}_${employeeId}`;
-    if (status === 'not_relevant') delete courseStatuses[key];
-    else courseStatuses[key] = { status, plannedDate: plannedDate || '' };
+    courseStatuses[key] = { status, plannedDate: plannedDate || '' };
   });
   renderStatusBoard();
 }
@@ -7635,11 +7751,11 @@ async function saveCourseCellFromModal() {
   const date = document.getElementById('course-cell-date').value;
   await mutateState('saveCourseCell', () => {
     const key = `${editingCourseCell.courseId}_${editingCourseCell.employeeId}`;
-    if (status === 'not_relevant') delete courseStatuses[key];
-    else courseStatuses[key] = { status, plannedDate: date || '' };
+    courseStatuses[key] = { status, plannedDate: date || '' };
   });
   closeModal('course-cell-modal');
   editingCourseCell = null;
+  renderStatusBoard();
 }
 async function clearCourseCellFromModal() {
   if (!editingCourseCell) return;
@@ -7649,11 +7765,19 @@ async function clearCourseCellFromModal() {
   });
   closeModal('course-cell-modal');
   editingCourseCell = null;
+  renderStatusBoard();
 }
 let editingRequirementId = null;
 let editingRequirementEmployeeId = null;
 function requirementRecordFor(requirementId, employeeId, year = boardYear) {
-  return requirementRecords[`${requirementId}_${employeeId}_${year}`] || { completedDate: '', dueDate: '', result: '', required: true };
+  const requirement = requirements.find(item => Number(item.id) === Number(requirementId));
+  const employee = empById(employeeId);
+  const applies = !requirement?.section || employeeSection(employee) === requirement.section;
+  return requirementRecords[`${requirementId}_${employeeId}_${year}`] || { completedDate: '', dueDate: '', result: '', required: applies };
+}
+function setStatusBoardSubview(view) {
+  statusBoardSubview = ['training', 'tests', 'requirements'].includes(view) ? view : 'training';
+  renderStatusBoard();
 }
 function changeBoardYear(step) {
   boardYear += step;
@@ -7662,13 +7786,20 @@ function changeBoardYear(step) {
 function openRequirementDefinitionModal(requirementId = null) {
   editingRequirementId = requirementId;
   const requirement = requirementId === null ? null : requirements.find(item => item.id === requirementId);
-  document.getElementById('req-def-modal-title').textContent = requirement ? 'Edit requirement' : 'Add requirement';
+  document.getElementById('req-def-modal-title').textContent = requirement ? `Edit ${requirement.kind === 'test' ? 'test' : 'requirement'}` : (statusBoardSubview === 'tests' ? 'Add recurring test' : 'Add requirement');
   document.getElementById('req-def-delete-btn').style.display = requirement ? 'inline-block' : 'none';
   document.getElementById('req-def-name').value = requirement?.name || '';
+  document.getElementById('req-def-kind').value = requirement?.kind || (statusBoardSubview === 'tests' ? 'test' : 'requirement');
+  const scopeSelect = document.getElementById('req-def-scope');
+  const availableSections = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
+  scopeSelect.innerHTML = `<option value="all">All sections</option>${availableSections.map(section => `<option value="${esc(section)}">${esc(section)}</option>`).join('')}`;
+  scopeSelect.value = requirement?.section || 'all';
   document.getElementById('req-def-modal').classList.add('open');
 }
 async function saveRequirementFromModal() {
   const name = document.getElementById('req-def-name').value.trim();
+  const kind = document.getElementById('req-def-kind').value === 'test' ? 'test' : 'requirement';
+  const section = document.getElementById('req-def-scope').value === 'all' ? '' : document.getElementById('req-def-scope').value;
   if (!name) { alert('Requirement name is required.'); return; }
   if (requirements.some(requirement => requirement.id !== editingRequirementId && requirement.name.toLowerCase() === name.toLowerCase())) {
     alert('A requirement with this name already exists.');
@@ -7677,10 +7808,10 @@ async function saveRequirementFromModal() {
   await mutateState('saveRequirementFromModal', () => {
   if (editingRequirementId === null) {
     const nextId = requirements.reduce((max, requirement) => Math.max(max, Number(requirement.id) || 0), 0) + 1;
-    requirements.push({ id: nextId, name });
+    requirements.push({ id: nextId, name, kind, section });
   } else {
     const requirement = requirements.find(item => item.id === editingRequirementId);
-    if (requirement) requirement.name = name;
+    if (requirement) Object.assign(requirement, { name, kind, section });
   }
   });
   closeModal('req-def-modal');
@@ -7750,15 +7881,16 @@ function renderLegacyStatusBoard() {
 function annualRequirementCell(requirement, employee) {
   const record = requirementRecordFor(requirement.id, employee.id);
   if (record.required === false) {
-    return `<button class="btn btn-sm" onclick="openRequirementRecordModal(${requirement.id},${employee.id})" style="width:100%;height:auto;min-height:54px;padding:7px 9px;text-align:left;white-space:normal;color:var(--muted)" title="Edit annual requirement">Not required</button>`;
+    return `<button class="board-status-cell not-applicable" onclick="openRequirementRecordModal(${requirement.id},${employee.id})" title="Not applicable — click to edit applicability">N/A</button>`;
   }
   const overdue = Boolean(record.dueDate && record.dueDate < todayStr());
   const isCompleted = Boolean(record.completedDate || record.result);
   const accent = overdue ? 'var(--destructive)' : (isCompleted ? '#16a34a' : '#dc2626');
-  const status = overdue ? 'Overdue' : (record.result ? esc(record.result) : (record.completedDate ? 'Completed' : 'Not entered'));
+  const status = overdue ? 'Overdue' : (record.result ? esc(record.result) : (record.completedDate ? 'Completed' : 'Missing'));
   const completed = record.completedDate ? `<div class="muted" style="font-size:10px;margin-top:3px">Completed ${fmtMed(record.completedDate)}</div>` : '';
   const due = record.dueDate ? `<div style="font-size:10px;margin-top:2px;color:${overdue ? 'var(--destructive)' : 'var(--muted)'}">Due ${fmtMed(record.dueDate)}</div>` : '';
-  return `<button class="btn btn-sm" onclick="openRequirementRecordModal(${requirement.id},${employee.id})" style="width:100%;height:auto;min-height:54px;padding:7px 9px;text-align:left;white-space:normal;border-color:${overdue ? 'var(--destructive)' : 'var(--border)'};background:${overdue ? 'color-mix(in srgb,var(--destructive) 9%,var(--surface))' : 'var(--surface)'}" title="Edit annual requirement"><strong style="color:${accent}">${status}</strong>${completed}${due}</button>`;
+  const cellClass = overdue ? 'missing' : isCompleted ? 'taken' : 'missing';
+  return `<button class="board-status-cell board-record-${cellClass}" onclick="openRequirementRecordModal(${requirement.id},${employee.id})" title="Edit ${requirement.kind === 'test' ? 'recurring test' : 'annual requirement'}"><strong style="color:${accent}">${status}</strong>${completed}${due}</button>`;
 }
 function courseCellSummary(record) {
   const counts = { mandatory: 0, planned: 0, taken: 0, not_relevant: 0 };
@@ -7771,11 +7903,13 @@ function courseCellHtml(course, employee) {
   const dateLine = dateLabel ? `<div class="muted" style="font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${dateLabel}</div>` : '';
   const overdue = record.status === 'planned' && record.plannedDate && record.plannedDate < todayStr();
   const accent = overdue ? 'var(--destructive)' : compliance.color;
-  const statusLabel = overdue ? 'Overdue' : compliance.label;
-  return `<button type="button" class="course-cell" onclick="openCourseCellModal(${course.id},${employee.id})" title="${esc(course.name)} · ${esc(employee.name)} — click to edit" style="--accent:${accent}">
+  const statusLabel = overdue ? 'Overdue' : record.status === 'mandatory' ? 'Missing' : compliance.label;
+  const statusClass = overdue || record.status === 'mandatory' ? 'missing' : record.status === 'planned' ? 'planned' : record.status === 'taken' ? 'taken' : 'not-applicable';
+  const compactStatusLabel = ({ Missing: 'M', Planned: 'P', Taken: '✓', 'Not relevant': '—', Overdue: 'OD' })[statusLabel] || statusLabel;
+  return `<button type="button" class="course-cell course-state-${statusClass}" onclick="openCourseCellModal(${course.id},${employee.id})" title="${esc(course.name)} · ${esc(employee.name)} — ${esc(statusLabel)}; click to edit" style="--accent:${accent}">
     <div class="course-cell-row">
       <span class="course-cell-dot" style="background:${accent}"></span>
-      <span class="course-cell-status" style="color:${accent}">${esc(statusLabel)}</span>
+      <span class="course-cell-status" style="color:${accent}">${esc(compactStatusLabel)}</span>
     </div>
     ${dateLine}
   </button>`;
@@ -7789,16 +7923,24 @@ function renderStatusBoard() {
     a.department.localeCompare(b.department, 'nb', { sensitivity: 'base' }) ||
     ((a.sortOrder ?? 99) - (b.sortOrder ?? 99)) ||
     a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
-  const courseRows = [...courses].sort((a, b) => a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
-  const requirementColumns = [...requirements].sort((a, b) => a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
+  const allCourseRows = [...courses].sort((a, b) => a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
+  const requirementColumns = [...requirements]
+    .filter(requirement => (requirement.kind === 'test' ? 'tests' : 'requirements') === statusBoardSubview)
+    .sort((a, b) => a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
 
   // Apply filters
   const searchLower = (boardFilters.search || '').toLowerCase();
+  const courseTargetEmployees = allEmployees.filter(emp => {
+    if (boardFilters.dept && emp.department !== boardFilters.dept) return false;
+    if (boardFilters.section && encodeURIComponent(JSON.stringify([String(emp.department || '').trim(), employeeSection(emp)])) !== boardFilters.section) return false;
+    return true;
+  });
   const employeeList = allEmployees.filter(emp => {
     if (boardFilters.dept && emp.department !== boardFilters.dept) return false;
-    if (searchLower && !emp.name.toLowerCase().includes(searchLower) && !(emp.department || '').toLowerCase().includes(searchLower)) return false;
-    if (boardFilters.status !== 'all') {
-      const hasMatch = courseRows.some(course => {
+    if (boardFilters.section && encodeURIComponent(JSON.stringify([String(emp.department || '').trim(), employeeSection(emp)])) !== boardFilters.section) return false;
+    if (searchLower && !emp.name.toLowerCase().includes(searchLower) && !(emp.department || '').toLowerCase().includes(searchLower) && !employeeSection(emp).toLowerCase().includes(searchLower)) return false;
+    if (statusBoardSubview === 'training' && boardFilters.status !== 'all') {
+      const hasMatch = allCourseRows.some(course => {
         const rec = courseStatusFor(course.id, emp.id);
         if (boardFilters.status === 'overdue') {
           return rec.status === 'planned' && rec.plannedDate && rec.plannedDate < todayStr();
@@ -7809,6 +7951,9 @@ function renderStatusBoard() {
     }
     return true;
   });
+  const courseRows = courseTargetEmployees.length
+    ? allCourseRows.filter(course => courseTargetEmployees.some(emp => courseAppliesToEmployee(course, emp) || Boolean(courseStatuses[`${course.id}_${emp.id}`])))
+    : boardFilters.dept || boardFilters.section ? [] : allCourseRows;
 
   // Group employees by department for sticky headers
   const byDept = new Map();
@@ -7834,8 +7979,11 @@ function renderStatusBoard() {
   }
   // Per-course summary counts
   function courseSummary(course) {
-    const counts = { mandatory: 0, planned: 0, taken: 0, overdue: 0, total: employeeList.length };
-    for (const emp of employeeList) {
+    const trackedEmployees = employeeList
+      .map(emp => ({ emp, record: courseStatusFor(course.id, emp.id) }))
+      .filter(({ record }) => record.status !== 'not_relevant');
+    const counts = { mandatory: 0, planned: 0, taken: 0, overdue: 0, total: trackedEmployees.length };
+    for (const { emp } of trackedEmployees) {
       const rec = courseStatusFor(course.id, emp.id);
       if (rec.status === 'mandatory') counts.mandatory++;
       else if (rec.status === 'planned') {
@@ -7847,7 +7995,10 @@ function renderStatusBoard() {
   }
 
   const allDepts = [...new Set(allEmployees.map(e => e.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
-  const requirementBoardWidth = 230 + requirementColumns.length * 190;
+  const sectionScopes = [...new Map(allEmployees.map(employee => [encodeURIComponent(JSON.stringify([String(employee.department || '').trim(), employeeSection(employee)])), { department: String(employee.department || '').trim(), section: employeeSection(employee) }]).filter(([, scope]) => scope.section)).entries()]
+    .sort((a, b) => a[1].department.localeCompare(b[1].department, 'nb') || a[1].section.localeCompare(b[1].section, 'nb'));
+  const applicableRequirements = requirementColumns.filter(requirement => !requirement.section || employeeList.some(emp => employeeSection(emp) === requirement.section));
+  const requirementBoardWidth = 230 + applicableRequirements.length * 190;
 
   // Filter bar
   const filterBar = `
@@ -7860,15 +8011,19 @@ function renderStatusBoard() {
         <option value="">All departments</option>
         ${allDepts.map(d => `<option value="${esc(d)}"${boardFilters.dept === d ? ' selected' : ''}>${esc(d)}</option>`).join('')}
       </select>
-      <select class="plain-select" style="height:32px;padding:5px 9px" onchange="setBoardFilter('status', this.value)" aria-label="Filter by status">
+      <select class="plain-select" style="height:32px;padding:5px 9px" onchange="setBoardFilter('section', this.value)" aria-label="Filter by section">
+        <option value="">All sections</option>
+        ${sectionScopes.map(([value, scope]) => `<option value="${esc(value)}"${boardFilters.section === value ? ' selected' : ''}>${esc(scope.department ? `${scope.department} — ${scope.section}` : scope.section)}</option>`).join('')}
+      </select>
+      ${statusBoardSubview === 'training' ? `<select class="plain-select" style="height:32px;padding:5px 9px" onchange="setBoardFilter('status', this.value)" aria-label="Filter by status">
         <option value="all"${boardFilters.status === 'all' ? ' selected' : ''}>All statuses</option>
         <option value="mandatory"${boardFilters.status === 'mandatory' ? ' selected' : ''}>Mandatory only</option>
         <option value="planned"${boardFilters.status === 'planned' ? ' selected' : ''}>Planned only</option>
         <option value="overdue"${boardFilters.status === 'overdue' ? ' selected' : ''}>Overdue only</option>
         <option value="taken"${boardFilters.status === 'taken' ? ' selected' : ''}>Taken only</option>
-      </select>
-      ${(boardFilters.dept || boardFilters.search || boardFilters.status !== 'all') ? `<button class="btn btn-sm" onclick="boardFilters={dept:'',status:'all',search:''};renderStatusBoard()">Clear filters</button>` : ''}
-      <span class="muted text-sm" style="margin-left:auto">${employeeList.length} of ${allEmployees.length} employees · ${courseRows.length} courses</span>
+      </select>` : ''}
+      ${(boardFilters.dept || boardFilters.section || boardFilters.search || boardFilters.status !== 'all') ? `<button class="btn btn-sm" onclick="boardFilters={dept:'',section:'',status:'all',search:''};renderStatusBoard()">Clear filters</button>` : ''}
+      <span class="muted text-sm" style="margin-left:auto">${employeeList.length} of ${allEmployees.length} employees · ${statusBoardSubview === 'training' ? `${courseRows.length} applicable courses` : `${applicableRequirements.length} ${statusBoardSubview === 'tests' ? 'tests' : 'requirements'}`}</span>
     </div>`;
 
   // Build course table (employee × course matrix)
@@ -7893,10 +8048,10 @@ function renderStatusBoard() {
         rows.push(`<tr data-employee-id="${emp.id}" style="border-bottom:1px solid var(--border)">
           <td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:8px 10px;min-width:180px">
             <div style="font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(emp.name)}</div>
-            <div class="muted" style="font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(emp.department || '')}</div>
+            <div class="muted" style="font-size:10px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc([emp.department, employeeSection(emp)].filter(Boolean).join(' · '))}</div>
             ${summaryHtml}
           </td>
-          ${courseRows.map(course => `<td style="padding:4px 5px;vertical-align:top;min-width:120px">${courseCellHtml(course, emp)}</td>`).join('')}
+          ${courseRows.map(course => `<td class="training-status-cell" style="padding:2px 1px;vertical-align:top;min-width:48px">${courseCellHtml(course, emp)}</td>`).join('')}
           <td style="padding:4px 5px;vertical-align:top;min-width:90px;text-align:center">
             <div style="font-size:11px;font-weight:600;color:${summary.overdue ? 'var(--destructive)' : 'var(--text)'}">${summary.overdue + summary.mandatory + summary.planned + summary.taken}/${courseRows.length}</div>
             <div class="muted" style="font-size:9px;margin-top:2px">tracked</div>
@@ -7922,9 +8077,9 @@ function renderStatusBoard() {
     <td style="padding:6px 5px"></td>
   </tr>` : '';
 
-  const requirementBody = employeeList.length && requirementColumns.length
-    ? employeeList.map(employee => `<tr data-employee-id="${employee.id}" style="border-bottom:1px solid var(--border)"><td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:8px 10px"><div style="font-weight:600;font-size:11px">${esc(employee.name)}</div><div class="muted" style="font-size:9px;margin-top:2px">${esc(employee.department)}</div></td>${requirementColumns.map(requirement => `<td data-requirement-id="${requirement.id}" style="padding:5px 6px;vertical-align:top">${annualRequirementCell(requirement, employee)}</td>`).join('')}</tr>`).join('')
-    : `<tr><td colspan="${requirementColumns.length + 1}" class="empty-note">${employeeList.length ? 'No annual requirements yet. Add one to start tracking.' : 'Add employees before tracking annual requirements.'}</td></tr>`;
+  const requirementBody = employeeList.length && applicableRequirements.length
+    ? employeeList.map(employee => `<tr data-employee-id="${employee.id}" style="border-bottom:1px solid var(--border)"><td style="position:sticky;left:0;background:var(--surface);z-index:1;padding:8px 10px"><div style="font-weight:600;font-size:11px">${esc(employee.name)}</div><div class="muted" style="font-size:9px;margin-top:2px">${esc(employeeSection(employee) || employee.department)}</div></td>${applicableRequirements.map(requirement => `<td data-requirement-id="${requirement.id}" style="padding:2px;vertical-align:top">${!requirement.section || employeeSection(employee) === requirement.section ? annualRequirementCell(requirement, employee) : '<span class="board-not-applicable" title="Not applicable to this section">N/A</span>'}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${applicableRequirements.length + 1}" class="empty-note">${employeeList.length ? (statusBoardSubview === 'tests' ? 'No recurring tests yet. Add one to start tracking.' : 'No annual requirements yet. Add one to start tracking.') : 'Add employees before tracking.'}</td></tr>`;
 
   document.getElementById('content').innerHTML = `
     <div class="flex items-center justify-between mb-6" style="gap:12px;flex-wrap:wrap">
@@ -7939,10 +8094,15 @@ function renderStatusBoard() {
       </div>
     </div>
     ${filterBar}
-    <div class="flex items-center justify-between mb-4" style="gap:12px;flex-wrap:wrap"><div class="card-title" style="font-size:15px">Courses (${courseRows.length})</div><button class="btn btn-primary" onclick="openCourseModal()">Add course</button></div>
-    <div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="position:sticky;left:0;background:var(--surface);z-index:2;padding:8px 10px;min-width:180px">Employee</th>${courseRows.map(course => `<th style="padding:8px 10px;min-width:120px;vertical-align:top"><button class="btn btn-sm" onclick="openCourseModal(${course.id})" style="text-align:left;width:100%;height:auto;white-space:normal;font-size:11px">${esc(course.name)}${course.code ? `<span class="muted" style="display:block;font-size:9px;margin-top:2px">${esc(course.code)}</span>` : ''}</button></th>`).join('')}<th style="padding:8px 10px;min-width:90px;background:var(--muted-bg);font-size:11px">Total</th></tr></thead><tbody>${courseBody}${courseSummaryHeader}</tbody></table></div>
-    <div class="flex items-center justify-between" style="gap:12px;flex-wrap:wrap;margin:24px 0 16px"><div><div class="card-title" style="font-size:15px">Annual Requirements (${requirements.length})</div><div class="muted text-sm" style="margin-top:3px">Records shown for ${boardYear}.</div></div><button class="btn btn-primary" onclick="openRequirementDefinitionModal()">Add requirement</button></div>
-    <div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;min-width:${requirementBoardWidth}px;font-size:12px"><thead><tr style="text-align:left;border-bottom:2px solid var(--border)"><th style="position:sticky;left:0;background:var(--surface);z-index:2;padding:8px 10px;min-width:140px">Employee</th>${requirementColumns.map(requirement => `<th data-requirement-id="${requirement.id}" style="padding:6px 8px;min-width:150px;vertical-align:top"><button class="btn btn-sm" onclick="openRequirementDefinitionModal(${requirement.id})" style="width:100%;height:auto;text-align:left;white-space:normal;font-size:11px">${esc(requirement.name)}</button></th>`).join('')}</tr></thead><tbody>${requirementBody}</tbody></table></div>`;
+    <div class="status-board-tabs" role="tablist" aria-label="Status board views">
+      <button class="status-board-tab${statusBoardSubview === 'training' ? ' active' : ''}" role="tab" aria-selected="${statusBoardSubview === 'training'}" onclick="setStatusBoardSubview('training')">Training</button>
+      <button class="status-board-tab${statusBoardSubview === 'tests' ? ' active' : ''}" role="tab" aria-selected="${statusBoardSubview === 'tests'}" onclick="setStatusBoardSubview('tests')">Recurring tests</button>
+      <button class="status-board-tab${statusBoardSubview === 'requirements' ? ' active' : ''}" role="tab" aria-selected="${statusBoardSubview === 'requirements'}" onclick="setStatusBoardSubview('requirements')">Requirements</button>
+    </div>
+    ${statusBoardSubview === 'training' ? `<div class="board-section-heading"><div><div class="card-title" style="font-size:15px">Training courses (${courseRows.length})</div><div class="muted text-sm">Red: missing · Yellow: planned · Green: completed · Grey: not applicable</div></div><button class="btn btn-primary" onclick="openCourseModal()">Add course</button></div>
+      <div class="card" style="padding:0;overflow:auto"><table class="status-board-table status-board-training-table" style="min-width:${236 + courseRows.length * 48}px"><thead><tr><th class="status-board-sticky">Employee</th>${courseRows.map(course => `<th><button class="btn btn-sm" onclick="openCourseModal(${course.id})" style="text-align:left;width:100%;height:auto;white-space:normal;font-size:10px;padding:4px">${esc(course.name)}<span class="board-scope-tag">${esc(courseScopeLabel(course))}</span>${course.code ? `<span class="muted" style="display:block;font-size:9px;margin-top:2px">${esc(course.code)}</span>` : ''}</button></th>`).join('')}<th>Total</th></tr></thead><tbody>${courseBody}${courseSummaryHeader}</tbody></table></div>` : ''}
+    ${statusBoardSubview !== 'training' ? `<div class="board-section-heading"><div><div class="card-title" style="font-size:15px">${statusBoardSubview === 'tests' ? 'Recurring tests' : 'Annual requirements'} (${applicableRequirements.length})</div><div class="muted text-sm">Records shown for ${boardYear}. Grey cells are not applicable.</div></div><button class="btn btn-primary" onclick="openRequirementDefinitionModal()">Add ${statusBoardSubview === 'tests' ? 'test' : 'requirement'}</button></div>
+      <div class="card" style="padding:0;overflow:auto"><table class="status-board-table" style="min-width:${requirementBoardWidth}px"><thead><tr><th class="status-board-sticky">Employee</th>${applicableRequirements.map(requirement => `<th><button class="btn btn-sm" onclick="openRequirementDefinitionModal(${requirement.id})" style="width:100%;height:auto;text-align:left;white-space:normal;font-size:11px">${esc(requirement.name)}<span class="board-scope-tag">${requirement.section ? esc(requirement.section) : 'All sections'}</span></button></th>`).join('')}</tr></thead><tbody>${requirementBody}</tbody></table></div>` : ''}`;
 }
 
 // ═══ PERSONNEL ═══════════════════════════════════════════════════════════════
@@ -8001,6 +8161,79 @@ function allowPersonnelDrop(event) {
 function clearPersonnelDrop(event) {
   event.currentTarget.classList.remove('personnel-drop-target');
 }
+function togglePersonnelSelection(employeeId, checked) {
+  const id = Number(employeeId);
+  if (checked) selectedPersonnelIds.add(id);
+  else selectedPersonnelIds.delete(id);
+  renderEmployees();
+}
+function toggleVisiblePersonnelSelection(checked) {
+  const searchLower = empSearch.toLowerCase();
+  const visibleEmployees = employees.filter(emp => {
+    const matchesSearch = !searchLower || [emp.name, emp.email, emp.organisation, emp.department, emp.section, emp.process, emp.team, emp.role, emp.level]
+      .some(value => String(value || '').toLowerCase().includes(searchLower));
+    return matchesSearch && (!empFilterDept || emp.department === empFilterDept) && (empFilterCatId === null || (emp.categoryIds || []).includes(empFilterCatId));
+  });
+  visibleEmployees.forEach(employee => checked ? selectedPersonnelIds.add(employee.id) : selectedPersonnelIds.delete(employee.id));
+  renderEmployees();
+}
+function openBulkPersonnelEdit() {
+  const selected = employees.filter(employee => selectedPersonnelIds.has(employee.id));
+  if (!selected.length) return;
+  const modal = document.getElementById('bulk-personnel-modal');
+  if (!modal) return;
+  const values = field => [...new Set(selected.map(employee => String(employee[field] || '').trim()))];
+  const setField = (id, currentValues) => {
+    const input = document.getElementById(id);
+    const clear = document.getElementById(`${id}-clear`);
+    if (input) input.value = currentValues.length === 1 ? currentValues[0] : '';
+    if (clear) clear.checked = false;
+    if (input) input.disabled = false;
+    const hint = document.getElementById(`${id}-hint`);
+    if (hint) hint.textContent = currentValues.length === 1 ? `Current: ${currentValues[0] || '(blank)'}` : `Mixed values: ${currentValues.filter(Boolean).join(', ') || '(blank)'}. Leave unchanged by keeping this field blank, or check Clear to remove it for everyone.`;
+  };
+  document.getElementById('bulk-personnel-count').textContent = `${selected.length} employee${selected.length === 1 ? '' : 's'} selected`;
+  setField('bulk-organisation', values('organisation'));
+  setField('bulk-department', values('department'));
+  setField('bulk-section', selected.map(employee => String(employee.section || employee.subdepartment || '').trim()));
+  setField('bulk-process', values('process'));
+  setField('bulk-team', values('team'));
+  modal.classList.add('open');
+}
+async function applyBulkPersonnelEdit() {
+  const selected = employees.filter(employee => selectedPersonnelIds.has(employee.id));
+  if (!selected.length) return;
+  const changes = {
+    organisation: document.getElementById('bulk-organisation-clear')?.checked ? '' : (document.getElementById('bulk-organisation')?.value.trim() || null),
+    department: document.getElementById('bulk-department-clear')?.checked ? '' : (document.getElementById('bulk-department')?.value.trim() || null),
+    section: document.getElementById('bulk-section-clear')?.checked ? '' : (document.getElementById('bulk-section')?.value.trim() || null),
+    process: document.getElementById('bulk-process-clear')?.checked ? '' : (document.getElementById('bulk-process')?.value.trim() || null),
+    team: document.getElementById('bulk-team-clear')?.checked ? '' : (document.getElementById('bulk-team')?.value.trim() || null),
+  };
+  if (!Object.values(changes).some(value => value !== null)) {
+    alert('Enter a new value or choose Clear for at least one field.');
+    return;
+  }
+  if (!confirm(`Apply the entered hierarchy changes to ${selected.length} selected employee${selected.length === 1 ? '' : 's'}?`)) return;
+  await mutateState('applyBulkPersonnelEdit', () => {
+    for (const employee of selected) {
+      if (changes.organisation !== null) employee.organisation = changes.organisation;
+      if (changes.department !== null) employee.department = changes.department;
+      if (changes.section !== null) {
+        employee.section = changes.section;
+        employee.subdepartment = changes.section;
+      }
+      if (changes.process !== null) employee.process = changes.process;
+      if (changes.team !== null) employee.team = changes.team;
+    }
+    ensureDepartmentOrders();
+    ensureSubdepartmentOrders();
+  }, { saveDisk: true });
+  closeModal('bulk-personnel-modal');
+  selectedPersonnelIds.clear();
+  showToast(`Updated hierarchy for ${selected.length} employee${selected.length === 1 ? '' : 's'}.`, 4500);
+  renderEmployees();
+}
 async function dropPersonnel(event, targetId) {
   event.preventDefault();
   clearPersonnelDrop(event);
@@ -8058,11 +8291,9 @@ function renderEmployees() {
     if (a.inactive !== b.inactive) return a.inactive ? 1 : -1;
     const left = a.list[0] || { organisation: a.organisation, department: a.department, section: a.subdepartment };
     const right = b.list[0] || { organisation: b.organisation, department: b.department, section: b.subdepartment };
-    if (!left.department && right.department) return -1;
-    if (left.department && !right.department) return 1;
     return comparePersonnelHierarchy(left, right) || (Number(a.processOrder) - Number(b.processOrder));
   });
-  const allDepts = orderedDepartments().filter(department => department !== 'Unassigned');
+  const allDepts = orderedDepartments().filter(department => department !== 'Unassigned' && department !== 'Independent sections');
   const departmentOrderControls = allDepts.map((dept, index) => {
     const color = resolveDeptColor(dept) || PALETTE[index % PALETTE.length];
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface)">
@@ -8087,6 +8318,12 @@ function renderEmployees() {
       </div>`).join('')}</div>
     </div>`;
   }).filter(Boolean).join('');
+  const standaloneSectionOrderControls = [...new Set(employees.filter(employee => !employee.department && employeeSection(employee)).map(employeeSection))]
+    .sort((left, right) => compareAssignedHierarchyValues('section', [employees.find(employee => !employee.department && employeeSection(employee) === left)?.organisation || 'Unassigned organisation', 'Independent sections'], left, right))
+    .map((section, index, sections) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface)"><span style="flex:1;font-size:12px">${esc(section)}</span><button type="button" class="icon-btn" title="Move ${esc(section)} up" ${index === 0 ? 'disabled' : ''} onclick="moveStandaloneSection(${esc(JSON.stringify(section))},-1)">${svgIcon('chevronUp')}</button><button type="button" class="icon-btn" title="Move ${esc(section)} down" ${index === sections.length - 1 ? 'disabled' : ''} onclick="moveStandaloneSection(${esc(JSON.stringify(section))},1)">${svgIcon('chevronDown')}</button></div>`).join('');
+  const personnelSelectionIds = new Set(filtered.map(employee => employee.id));
+  const visibleSelectedCount = [...selectedPersonnelIds].filter(id => personnelSelectionIds.has(id)).length;
+  const visibleAllSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
   const deptSwatches = allDepts.map((dept, idx) => {
     const color = resolveDeptColor(dept) || PALETTE[idx % PALETTE.length];
     const paletteButtons = PALETTE.map(option => `
@@ -8101,11 +8338,13 @@ function renderEmployees() {
       <div class="swatches" style="gap:5px">${paletteButtons}</div>
     </div>`;
   }).join('');
-  const sectionSwatches = [...new Set(employees.filter(emp => emp.section || emp.subdepartment).map(emp => `${emp.department || 'Unassigned'}\u0000${emp.section || emp.subdepartment}`))].sort().map(key => {
+  const standaloneSections = [...new Set(employees.filter(emp => !emp.department && employeeSection(emp)).map(employeeSection))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  const sectionSwatches = [...new Set(employees.filter(emp => emp.section || emp.subdepartment).map(emp => `${emp.department || ''}\u0000${emp.section || emp.subdepartment}`))].sort().map(key => {
     const [dept, section] = key.split('\u0000');
-    const color = resolveSectionColor(dept, section) || resolveDeptColor(dept) || PALETTE[allDepts.indexOf(dept) % PALETTE.length];
+    const color = resolveSectionColor(dept, section) || (dept ? resolveDeptColor(dept) : PALETTE[Math.max(0, standaloneSections.indexOf(section)) % PALETTE.length]);
     const sectionButtons = PALETTE.map(option => `<button type="button" class="swatch${option === color ? ' sel' : ''}" title="${option}" style="background:${option};width:18px;height:18px" onclick="setSectionColor(${esc(JSON.stringify(dept))},${esc(JSON.stringify(section))},'${option}')"></button>`).join('');
-    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:12px"><span style="min-width:160px;display:inline-flex;align-items:center;gap:6px"><span class="chip-dot" style="background:${color};display:inline-block;width:8px;height:8px;border-radius:50%"></span><span>${esc(dept)} / ${esc(section)}</span></span><div class="swatches" style="gap:5px">${sectionButtons}</div></div>`;
+    const label = dept ? `${dept} / ${section}` : `Independent sections / ${section}`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:12px"><span style="min-width:160px;display:inline-flex;align-items:center;gap:6px"><span class="chip-dot" style="background:${color};display:inline-block;width:8px;height:8px;border-radius:50%"></span><span>${esc(label)}</span></span><div class="swatches" style="gap:5px">${sectionButtons}</div></div>`;
   }).join('');
   const teamSwatches = [...new Set(employees.filter(emp => emp.team).map(emp => `${emp.department || 'Unassigned'}\u0000${emp.section || emp.subdepartment || 'Unassigned section'}\u0000${emp.process || 'Unassigned process'}\u0000${emp.team}`))].sort().map(key => {
     const [dept, section, process, team] = key.split('\u0000');
@@ -8172,7 +8411,7 @@ function renderEmployees() {
           || sectionColor;
         const inactive = emp.inactive === true;
         rowsHtml += `<tr class="personnel-colored-row${inactive ? ' personnel-inactive' : ''}" style="--personnel-row-color:${personnelColor}" draggable="true" ondragstart="startPersonnelDrag(event,${emp.id})" ondragend="endPersonnelDrag(event)" ondragover="allowPersonnelDrop(event)" ondragleave="clearPersonnelDrop(event)" ondrop="dropPersonnel(event,${emp.id})">
-          <td><span class="personnel-drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span><div style="font-weight:500;display:inline">${esc(emp.name)}</div>${inactive ? '<span class="chip" style="margin-left:6px;font-size:10px">Inactive</span>' : ''}${cats.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">${cats.map(catChip).join('')}</div>` : ''}</td>
+          <td><span class="personnel-drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span><input type="checkbox" aria-label="Select ${esc(emp.name)}" ${selectedPersonnelIds.has(emp.id) ? 'checked' : ''} onchange="togglePersonnelSelection(${emp.id},this.checked);event.stopPropagation()" style="margin-right:8px"><div style="font-weight:500;display:inline">${esc(emp.name)}</div>${inactive ? '<span class="chip" style="margin-left:6px;font-size:10px">Inactive</span>' : ''}${cats.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">${cats.map(catChip).join('')}</div>` : ''}</td>
           <td class="muted">${esc(emp.email || '') || '<span class="sum-dash">—</span>'}</td>
           <td>${esc(emp.role || '')}</td>
           <td class="muted">${esc(employeeHierarchyLeaf(emp))}${emp.level ? `<div style="font-size:11px;margin-top:2px">${esc(emp.level)}</div>` : ''}</td>
@@ -8227,6 +8466,11 @@ function renderEmployees() {
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,220px));justify-content:start;gap:8px;margin-top:10px">
             ${departmentOrderControls || '<span class="muted text-sm">Add at least two departments to manage their order.</span>'}
           </div>
+          <div style="font-size:13px;font-weight:700;margin-top:14px">Independent section order</div>
+          <div class="form-hint">Sections without a department are grouped separately and ordered here.</div>
+          <div style="display:grid;gap:8px;margin-top:10px">
+            ${standaloneSectionOrderControls || '<span class="muted text-sm">No independent sections.</span>'}
+          </div>
         </div>
         <div>
           <div style="font-size:13px;font-weight:700">Sub-team order</div>
@@ -8248,7 +8492,7 @@ function renderEmployees() {
     <div class="card" style="padding:0;overflow:hidden">
       <div style="overflow:auto">
         <table class="list-table">
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Department / Level</th><th>Birthday</th><th>Home address</th><th>Work phone</th><th>Private phone</th><th>Order</th><th></th></tr></thead>
+          <thead><tr><th><input type="checkbox" aria-label="Select all visible employees" ${visibleAllSelected ? 'checked' : ''} onchange="toggleVisiblePersonnelSelection(this.checked)"> Name</th><th>Email</th><th>Role</th><th>Department / Level</th><th>Birthday</th><th>Home address</th><th>Work phone</th><th>Private phone</th><th>Order</th><th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table>
       </div>
@@ -8277,10 +8521,11 @@ function openEmpModal(id) {
   editingEmpId = id || null;
   const emp = id ? empById(id) : null;
   document.getElementById('emp-modal-title').textContent = emp ? 'Edit Employee' : 'Add Employee';
+  document.getElementById('emp-save-add-another').style.display = emp ? 'none' : '';
   document.getElementById('ef-name').value = emp?.name || '';
   document.getElementById('ef-email').value = emp?.email || '';
   document.getElementById('ef-role').value = emp?.role || '';
-  document.getElementById('ef-organisation').value = emp?.organisation || '';
+  document.getElementById('ef-organisation').value = emp?.organisation || appSettings.defaultPersonnelOrganisation || '';
   document.getElementById('ef-dept').value = emp?.department || '';
   document.getElementById('ef-section').value = emp?.section || emp?.subdepartment || '';
   document.getElementById('ef-process').value = emp?.process || '';
@@ -8295,6 +8540,8 @@ function openEmpModal(id) {
   document.getElementById('ef-address').value = emp?.homeAddress || '';
   document.getElementById('ef-phone-work').value = emp?.phoneWork || '';
   document.getElementById('ef-phone-priv').value = emp?.phonePrivate || '';
+  document.getElementById('ef-inactive-reason').value = emp?.inactiveReason || '';
+  document.getElementById('ef-inactive-reason-wrap').style.display = emp?.inactive === true ? '' : 'none';
   document.getElementById('ef-sort').value = emp?.sortOrder ?? nextAvailableEmployeeSortOrder();
   document.getElementById('ef-shift-rotation').checked = emp?.includeInShiftRotation === true;
   document.getElementById('ef-inactive').checked = emp?.inactive === true;
@@ -8321,7 +8568,7 @@ function updateEmployeeHierarchySuggestions() {
   setDataListOptions('ef-processes', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section)).map(emp => emp.process));
   setDataListOptions('ef-teams', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section) && (!process || emp.process === process)).map(emp => emp.team));
 }
-async function saveEmployee() {
+async function saveEmployee(addAnother = false) {
   const name = document.getElementById('ef-name').value.trim();
   const email = document.getElementById('ef-email').value.trim();
   const role = document.getElementById('ef-role').value.trim();
@@ -8338,6 +8585,7 @@ async function saveEmployee() {
   const sortRaw = document.getElementById('ef-sort').value.trim();
   const includeInShiftRotation = document.getElementById('ef-shift-rotation').checked === true;
   const inactive = document.getElementById('ef-inactive').checked === true;
+  const inactiveReason = inactive ? document.getElementById('ef-inactive-reason').value.trim().slice(0, 240) : '';
   const shiftTeamId = document.getElementById('ef-shift-team').value;
   if (!name || !email || !role) { alert('Name, email, and role are required.'); return; }
   if (Array.from(name).length > 30) { alert('Employee name can be at most 30 characters.'); return; }
@@ -8351,17 +8599,17 @@ async function saveEmployee() {
     ? (normalizeEmployeeSortOrder(empById(editingEmpId)?.sortOrder) ?? nextAvailableEmployeeSortOrder(employees, editingEmpId))
     : nextAvailableEmployeeSortOrder();
 
-  const rec = { name, email, role, organisation, department: dept, section, process, team, subdepartment: section, level, birthday, homeAddress, phoneWork, phonePrivate, sortOrder, categoryIds: [...selectedEmpCatIds], includeInShiftRotation, shiftTeamId, inactive };
+  const rec = { name, email, role, organisation, department: dept, section, process, team, subdepartment: section, level, birthday, homeAddress, phoneWork, phonePrivate, sortOrder, categoryIds: [...selectedEmpCatIds], includeInShiftRotation, shiftTeamId, inactive, inactiveReason: inactive ? inactiveReason : '' };
   const existingEmployee = editingEmpId ? empById(editingEmpId) : null;
   const rotationDates = existingEmployee?.includeInShiftRotation && !includeInShiftRotation
     ? rotationDatesForEmployee(editingEmpId) : [];
   if (rotationDates.length) {
-    confirmShiftRotationRemoval(existingEmployee, rotationDates.length, () => completeEmployeeSave(rec));
+    confirmShiftRotationRemoval(existingEmployee, rotationDates.length, () => completeEmployeeSave(rec, addAnother));
     return;
   }
-  await completeEmployeeSave(rec);
+  await completeEmployeeSave(rec, addAnother);
 }
-async function completeEmployeeSave(rec) {
+async function completeEmployeeSave(rec, addAnother = false) {
   await mutateState('saveEmployee', () => {
     if (editingEmpId) {
       rec.id = editingEmpId;
@@ -8377,7 +8625,35 @@ async function completeEmployeeSave(rec) {
     employees.sort((a, b) => a.name.localeCompare(b.name));
   }, { saveDisk: true });
 
-  closeModal('emp-modal');
+  if (addAnother) {
+    document.getElementById('emp-modal-title').textContent = 'Add Employee';
+    document.getElementById('ef-name').value = '';
+    document.getElementById('ef-email').value = '';
+    document.getElementById('ef-role').value = '';
+    document.getElementById('ef-organisation').value = rec.organisation || '';
+    document.getElementById('ef-dept').value = rec.department || '';
+    document.getElementById('ef-section').value = rec.section || '';
+    document.getElementById('ef-process').value = rec.process || '';
+    document.getElementById('ef-team').value = rec.team || '';
+    document.getElementById('ef-level').value = '';
+    document.getElementById('ef-birthday').value = '';
+    document.getElementById('ef-address').value = '';
+    document.getElementById('ef-phone-work').value = '';
+    document.getElementById('ef-phone-priv').value = '';
+    document.getElementById('ef-inactive').checked = false;
+    document.getElementById('ef-inactive-reason').value = '';
+    document.getElementById('ef-inactive-reason-wrap').style.display = 'none';
+    document.getElementById('ef-sort').value = nextAvailableEmployeeSortOrder();
+    document.getElementById('ef-shift-rotation').checked = false;
+    document.getElementById('ef-shift-team').value = '';
+    selectedEmpCatIds = [];
+    buildEmpCategoryPicker();
+    updateEmployeeHierarchySuggestions();
+    setTimeout(() => document.getElementById('ef-name').focus(), 50);
+  } else {
+    editingEmpId = null;
+    closeModal('emp-modal');
+  }
   renderEmployees();
 }
 function confirmShiftRotationRemoval(employee, rotationDateCount, onConfirm) {
@@ -8445,12 +8721,6 @@ function renderCategoryList() {
         </div>
       </div>`
     : `<div class="flex items-center justify-between" style="border:1px solid var(--border);border-radius:8px;padding:8px 10px">
-    document.querySelectorAll('.hierarchy-color-panel details[data-color-group]').forEach(details => {
-      details.addEventListener('toggle', () => {
-        if (details.open) openPersonnelColorGroups.add(details.dataset.colorGroup);
-        else openPersonnelColorGroups.delete(details.dataset.colorGroup);
-      });
-    });
         <span class="chip" style="${chipStyle(cat.color)}"><span class="chip-dot" style="background:${cat.color}"></span>${esc(cat.name)}</span>
         <span class="flex gap-2">
           <button class="icon-btn" title="Edit" onclick="startEditCategory(${cat.id})"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 16-.8 4.8L8 20l11.5-11.5a2.1 2.1 0 0 0-3-3z"/><path d="m14.5 6.5 3 3"/></svg></button>
@@ -8624,6 +8894,19 @@ function getEmployeeWorkload(emp, dateStrings = rollingDatesFor(new Date(), 30))
   let oooUnits = 0;
   let oooHours = 0;
   let overtimeHours = 0;
+  const targetDates = new Set(dateStrings);
+  const activityById = new Map(activities.map(activity => [activity.id, activity]));
+  const assignmentsByDate = new Map();
+  const employeePrefix = `${emp.id}_`;
+  for (const key of Object.keys(activityShiftsMap)) {
+    if (!key.startsWith(employeePrefix)) continue;
+    const [, date, activityId] = key.split('_');
+    if (!targetDates.has(date)) continue;
+    const activity = activityById.get(Number(activityId));
+    if (!activity || activityStatus(activity) !== 'confirmed' || !activityCountsTowardLoad(activity)) continue;
+    if (!assignmentsByDate.has(date)) assignmentsByDate.set(date, []);
+    assignmentsByDate.get(date).push(activity);
+  }
 
   dateStrings.forEach(ds => {
     overtimeHours += Number(overtimeMap[`${emp.id}_${ds}`]?.hours) || 0;
@@ -8645,16 +8928,11 @@ function getEmployeeWorkload(emp, dateStrings = rollingDatesFor(new Date(), 30))
       }
     }
 
-    Object.entries(activityShiftsMap).forEach(([key]) => {
-      if (!key.startsWith(`${emp.id}_${ds}_`)) return;
-      const activityId = +key.split('_')[2];
-      const activity = activities.find(act => act.id === activityId);
-      if (!activity || activityStatus(activity) !== 'confirmed') return;
-      if (activity && !activityCountsTowardLoad(activity)) return;
+    for (const activity of assignmentsByDate.get(ds) || []) {
       const measure = activityAdministrativeMeasure(activity, emp.id, ds);
       activityUnits += measure.units;
       timedActivityHours += measure.hours;
-    });
+    }
   });
 
   return {
@@ -8762,8 +9040,17 @@ function setWorkloadPeriod(period) {
   workloadPeriod = period === 'month' || period === 'week' ? period : 'year';
   renderDashboard();
 }
-function teamWorkloadForDates(dateStrings) {
-  return employees.reduce((acc, emp) => {
+function setDashboardRosterSort(sort) {
+  dashboardRosterSort = sort === 'status' ? 'status' : 'department';
+  renderDashboard();
+}
+function setDashboardScopeFilter(value) {
+  dashboardScopeFilter = String(value || '');
+  lsSet('teamManagerDashboardScope', dashboardScopeFilter);
+  renderDashboard();
+}
+function teamWorkloadForDates(dateStrings, employeeList = employees) {
+  return employeeList.reduce((acc, emp) => {
     const row = getEmployeeWorkload(emp, dateStrings);
     acc.statusUnits += row.statusUnits;
     acc.statusHours += row.statusHoursActual;
@@ -8781,9 +9068,9 @@ function teamWorkloadForDates(dateStrings) {
 }
 
 // ═══ DASHBOARD ═══════════════════════════════════════════════════════════════
-function staffingLoadForDates(dateStrings) {
+function staffingLoadForDates(dateStrings, employeeList = employees) {
   const total = { capacityHours: 0, extraHours: 0, overtimeHours: 0 };
-  for (const emp of employees) {
+  for (const emp of employeeList) {
     const load = getEmployeeStaffingLoad(emp, dateStrings);
     total.capacityHours += load.capacityHours;
     total.extraHours += load.extraHours;
@@ -8794,14 +9081,15 @@ function staffingLoadForDates(dateStrings) {
     : (total.extraHours + total.overtimeHours > 0 ? Infinity : 0);
   return total;
 }
-function staffingActivityCountForDates(dateStrings) {
+function staffingActivityCountForDates(dateStrings, employeeList = employees) {
   return activities.filter(activity => {
     if (activityStatus(activity) !== 'confirmed' || !activityCountsTowardLoad(activity)) return false;
+    if (!employeeList.some(emp => activityRelevantToEmployee(activity, emp))) return false;
     return dateStrings.some(date => date >= activity.startDate && date <= activity.endDate);
   }).length;
 }
-function renderTeamStaffingChart(dateStrings) {
-  if (!dateStrings.length || !employees.length) return '<div class="empty-note" style="padding:24px">No staffing data for this interval.</div>';
+function renderTeamStaffingChart(dateStrings, employeeList = employees) {
+  if (!dateStrings.length || !employeeList.length) return '<div class="empty-note" style="padding:24px">No staffing data for this interval.</div>';
   const bucketSize = dateStrings.length > 93 ? 'month' : (dateStrings.length > 45 ? 'week' : 'day');
   const buckets = [];
   for (const date of dateStrings) {
@@ -8811,7 +9099,7 @@ function renderTeamStaffingChart(dateStrings) {
     bucket.dates.push(date);
   }
   const points = buckets
-    .map(bucket => ({ ...bucket, load: staffingLoadForDates(bucket.dates), activityCount: staffingActivityCountForDates(bucket.dates) }))
+    .map(bucket => ({ ...bucket, load: staffingLoadForDates(bucket.dates, employeeList), activityCount: staffingActivityCountForDates(bucket.dates, employeeList) }))
     .filter(point => point.load.capacityHours > 0 || point.load.extraHours > 0 || point.load.overtimeHours > 0);
   if (!points.length) return '<div class="empty-note" style="padding:24px">No working days with staffing data for this interval.</div>';
   const width = 760, height = 210, left = 42, right = 18, top = 18, bottom = 34;
@@ -8851,6 +9139,13 @@ function renderTeamStaffingChart(dateStrings) {
 }
 function renderDashboard() {
   const today = todayStr();
+  const dashboardScope = /^(department|section)::([\s\S]+)$/.exec(dashboardScopeFilter);
+  const dashboardEmployees = employees.filter(emp => !dashboardScope || (dashboardScope[1] === 'department'
+    ? String(emp.department || (employeeSection(emp) ? 'Independent sections' : '')).trim() === dashboardScope[2]
+    : employeeSection(emp) === dashboardScope[2]));
+  const dashboardEmployeeIds = new Set(dashboardEmployees.map(emp => emp.id));
+  const departmentOptions = [...new Set(employees.map(emp => String(emp.department || (employeeSection(emp) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
+  const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
   const cardStatuses = statuses.filter(s => s.key !== 'at_work').slice(0, 3);
   const counts = {};
   statuses.forEach(s => { counts[s.key] = 0; });
@@ -8858,7 +9153,7 @@ function renderDashboard() {
   let oooToday = 0;
   let absentToday = 0;
   const unavailableTodayPeople = [];
-  for (const emp of employees) {
+  for (const emp of dashboardEmployees) {
     const entry = getEntryObj(`${emp.id}_${today}`);
     if (entry && counts[entry.status] !== undefined) counts[entry.status]++;
     const status = entry ? siFor(entry.status) : null;
@@ -8888,7 +9183,7 @@ function renderDashboard() {
 
   const trendDays = [];
   for (let i = 0; i < 14; i++) { const d = new Date(); d.setDate(d.getDate() + i); trendDays.push(d); }
-  const totalEmployees = employees.length;
+  const totalEmployees = dashboardEmployees.length;
   const trendData = trendDays.map(d => {
     const ds = fmt(d), dayCounts = {};
     let assignmentUnavailable = 0;
@@ -8897,7 +9192,7 @@ function renderDashboard() {
     let outOfOfficeStatusCount = 0;
     let absenceStatusCount = 0;
     statuses.forEach(s => { dayCounts[s.key] = 0; });
-    for (const emp of employees) {
+    for (const emp of dashboardEmployees) {
       const entry = getEntryObj(`${emp.id}_${ds}`);
       const status = entry ? siFor(entry.status) : null;
       const statusAffectsAvailability = !!status && !statusEntryIsPlanned(entry) && (status.isAbsence || status.isOutOfOffice);
@@ -8930,46 +9225,102 @@ function renderDashboard() {
   const trendMax = Math.max(1, totalEmployees);
 
   const upcoming = [];
+  const upcomingKeys = new Set();
   for (const [key, raw] of Object.entries(entriesMap)) {
     const idx = key.indexOf('_');
     const empId = +key.slice(0, idx), date = key.slice(idx + 1);
     if (date <= today) continue;
     const entry = getEntryObj(key);
     const emp = empById(empId);
-    if (!entry || !emp) continue;
-    if (entry.status === 'at_work') continue;
-    upcoming.push({ emp, date, entry });
+    if (!entry || !emp || !dashboardEmployeeIds.has(emp.id)) continue;
+    const unavailableActivity = unavailableActivityFor(emp.id, date);
+    if (entry.status === 'at_work' && !unavailableActivity) continue;
+    const activityAssignmentInfo = unavailableActivity ? activityAssignment(`${emp.id}_${date}_${unavailableActivity.id}`) : null;
+    const workCode = activityAssignmentInfo && (appSettings.workCodes || []).find(code => code.id === activityAssignmentInfo.workCodeId);
+    const status = siFor(entry.status);
+    const associatedActivities = activities
+      .filter(activity => activityStatus(activity) !== 'cancelled'
+        && participantFor(activity, emp.id)
+        && date >= activity.startDate && date <= activity.endDate
+        && activityRelevantToEmployee(activity, emp))
+      .map(activity => activity.name)
+      .filter((name, index, names) => name && names.indexOf(name) === index);
+    const destination = associatedActivities.length
+      ? associatedActivities.join(', ')
+      : unavailableActivity
+        ? [unavailableActivity.name, workCode?.name].filter(Boolean).join(' · ')
+        : (status?.label || friendlyStatusLabel(entry.status));
+    const note = cellNotesMap[`${emp.id}_${date}`] || '';
+    upcoming.push({ emp, date, entry, destination, reason: note });
+    upcomingKeys.add(`${emp.id}_${date}`);
+  }
+  for (const key of Object.keys(activityShiftsMap)) {
+    const match = /^(\d+)_([\d-]+)_(\d+)$/.exec(key);
+    if (!match) continue;
+    const emp = empById(Number(match[1]));
+    const date = match[2];
+    const itemKey = `${match[1]}_${date}`;
+    if (date <= today || !emp || !dashboardEmployeeIds.has(emp.id) || upcomingKeys.has(itemKey)) continue;
+    const unavailableActivity = unavailableActivityFor(emp.id, date);
+    if (!unavailableActivity || Number(match[3]) !== Number(unavailableActivity.id)) continue;
+    const assignment = activityAssignment(key);
+    const workCode = (appSettings.workCodes || []).find(code => code.id === assignment.workCodeId);
+    upcoming.push({
+      emp,
+      date,
+      entry: getEntryObj(itemKey) || { status: 'at_work' },
+      destination: [unavailableActivity.name, workCode?.name].filter(Boolean).join(' · '),
+      reason: cellNotesMap[itemKey] || '',
+    });
+    upcomingKeys.add(itemKey);
   }
   upcoming.sort((a, b) => a.date.localeCompare(b.date) || a.emp.name.localeCompare(b.emp.name));
-  const upcomingByDate = upcoming.reduce((map, item) => {
-    if (!map.has(item.date)) map.set(item.date, []);
-    map.get(item.date).push(item);
-    return map;
-  }, new Map());
 
-  const rosterGroups = deptGroups();
+  const rosterGroups = deptGroups(dashboardEmployees, false);
+  const rosterMemberCount = rosterGroups.reduce((total, group) => total + group.emps.length, 0);
+  const rosterDepartmentCount = new Set(rosterGroups.map(group => group.dept)).size;
   const statusBadge = key => {
     const st = siFor(key);
     const label = st ? st.label : friendlyStatusLabel(key);
     const color = st ? st.color : '#22c55e';
     return `<span class="badge-status" style="${statusStyle(color)}">${esc(label)}</span>`;
   };
-  const upcomingInlineName = item => {
-    const st = siFor(item.entry.status);
-    const label = st ? st.label : friendlyStatusLabel(item.entry.status);
-    const isPartial = item.entry?.durationType === 'time';
-    const hours = isPartial && item.entry?.time ? timeRangeHours(item.entry.time) : 0;
-    const detail = isPartial && hours ? `${label} (${hours.toFixed(1)}h)` : label;
-    return `${esc(item.emp.name)} <span class="muted" style="font-size:12px">(${esc(detail)})</span>`;
-  };
-
+  const rosterDisplayGroups = dashboardRosterSort === 'status'
+    ? [...new Set(rosterGroups.flatMap(group => group.emps.map(emp => getEntryObj(`${emp.id}_${today}`)?.status ?? 'at_work')))]
+      .sort((left, right) => {
+        const leftIndex = statuses.findIndex(status => status.key === left);
+        const rightIndex = statuses.findIndex(status => status.key === right);
+        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex) || String(left).localeCompare(String(right));
+      })
+      .map(status => ({
+        dept: '',
+        subdept: '',
+        status,
+        emps: rosterGroups.flatMap(group => group.emps).filter(emp => (getEntryObj(`${emp.id}_${today}`)?.status ?? 'at_work') === status)
+          .sort((left, right) => left.name.localeCompare(right.name, 'nb')),
+      }))
+    : rosterGroups;
   const wlRange = workloadRange();
   const workloadDates = datesInRange(new Date(`${wlRange.start}T00:00:00`), new Date(`${wlRange.end}T00:00:00`));
-  const workloadRows = employees.map(emp => ({ emp, ...getEmployeeWorkload(emp, workloadDates), staffing: getEmployeeStaffingLoad(emp, workloadDates) }))
+  const workloadRows = dashboardEmployees.map(emp => ({ emp, ...getEmployeeWorkload(emp, workloadDates), staffing: getEmployeeStaffingLoad(emp, workloadDates) }))
     .sort((a, b) => b.totalUnits - a.totalUnits || b.totalHoursActual - a.totalHoursActual || a.emp.name.localeCompare(b.emp.name, 'nb'));
-  const workloadTeamTotals = teamWorkloadForDates(workloadDates);
-  const workloadTeamStaffing = employees.reduce((total, emp) => {
-    const load = getEmployeeStaffingLoad(emp, workloadDates);
+  const scopedWorkloadTotals = teamWorkloadForDates(workloadDates, dashboardEmployees);
+  const workloadTeamTotals = workloadRows.reduce((total, row) => {
+    total.statusUnits += row.statusUnits;
+    total.statusHours += row.statusHoursActual;
+    total.activityUnits += row.activityUnits;
+    total.activityHours += row.activityHoursActual;
+    total.absenceUnits += row.absenceUnits;
+    total.absenceHours += row.absenceHoursActual;
+    total.oooUnits += row.oooUnits;
+    total.oooHours += row.oooHours;
+    total.overtimeHours += row.overtimeHours;
+    total.totalUnits += row.totalUnits;
+    total.totalHours += row.totalHoursActual;
+    return total;
+  }, { ...scopedWorkloadTotals });
+  const workloadTeamStaffing = workloadRows.reduce((total, row) => {
+    const load = row.staffing;
     total.capacityHours += load.capacityHours;
     total.extraHours += load.extraHours;
     total.overtimeHours += load.overtimeHours;
@@ -8986,7 +9337,7 @@ function renderDashboard() {
     const start = new Date(wlRange.anchorYear, month, 1);
     const end = new Date(wlRange.anchorYear, month + 1, 0);
     const dates = datesInRange(start, end);
-    const totals = teamWorkloadForDates(dates);
+    const totals = teamWorkloadForDates(dates, dashboardEmployees);
     yearlyWorkload.push({
       month,
       label: start.toLocaleDateString('en-US', { month: 'short' }),
@@ -9029,19 +9380,19 @@ function renderDashboard() {
   document.getElementById('content').innerHTML = `
     <div class="mb-6">
       <div class="page-title">Dashboard</div>
-      <div class="page-sub">Staffing overview for today and upcoming absences.</div>
+      <div class="dashboard-scope-control"><div class="page-sub">Staffing overview for today and upcoming absences.</div><label>Show stats for <select class="plain-select" onchange="setDashboardScopeFilter(this.value)" aria-label="Dashboard department or section"><option value="" ${dashboardScopeFilter === '' ? 'selected' : ''}>All personnel</option>${departmentOptions.length ? `<optgroup label="Departments">${departmentOptions.map(value => `<option value="${esc(scheduleScopeValue('department', value))}" ${dashboardScopeFilter === scheduleScopeValue('department', value) ? 'selected' : ''}>${esc(value)}</option>`).join('')}</optgroup>` : ''}${sectionOptions.length ? `<optgroup label="Sections">${sectionOptions.map(value => `<option value="${esc(scheduleScopeValue('section', value))}" ${dashboardScopeFilter === scheduleScopeValue('section', value) ? 'selected' : ''}>${esc(value)}</option>`).join('')}</optgroup>` : ''}</select></label></div>
       <div class="muted text-sm" style="margin-top:6px">Today: <b style="color:var(--text)">${fmtMed(today)}</b></div>
     </div>
     ${hostedMode && hostedUser?.role === 'admin' ? '<div class="dashboard-alert-grid mb-6"><div id="admin-change-review-card" class="card admin-change-review-card"><div class="card-title mb-2" style="font-size:15px">Grid Changes</div><div class="muted text-sm">Loading recent changes…</div></div></div>' : ''}
     <div class="dash-grid-4 mb-6">
       <div class="card">
         <div class="card-title-muted">Available</div>
-        <div class="card-value" style="margin-top:6px">${availableToday} / ${employees.length}</div>
+        <div class="card-value" style="margin-top:6px">${availableToday} / ${dashboardEmployees.length}</div>
         <div class="muted text-sm" style="margin-top:6px">${esc(unavailableTodayInline)}</div>
       </div>
       <div class="card">
         <div class="card-title-muted">Total employed</div>
-        <div class="card-value" style="margin-top:6px">${employees.length}</div>
+        <div class="card-value" style="margin-top:6px">${dashboardEmployees.length}</div>
       </div>
       <div class="card">
         <div class="card-title-muted">Out of office</div>
@@ -9071,7 +9422,7 @@ function renderDashboard() {
           <span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;display:inline-block;background:#0ea5e9"></span>Assigned elsewhere</span>
         </div>
       </div>
-      ${employees.length === 0
+      ${dashboardEmployees.length === 0
         ? '<div class="empty-note" style="height:240px;display:flex;align-items:center;justify-content:center">No personnel yet.</div>'
         : `<div class="trend-wrap" style="height:240px;">${trendData.map(t => {
             const segs = [];
@@ -9100,32 +9451,30 @@ function renderDashboard() {
             </div>`;
           }).join('')}</div>`}
     </div>
+    <div class="card dashboard-roster-card mb-6">
+      <div class="flex items-center justify-between dashboard-roster-heading">
+        <div><div class="card-title" style="font-size:15px">Personnel by department</div><div class="muted text-sm" style="margin-top:4px">Today’s status, grouped by department and section.</div></div>
+        <label class="roster-sort-control">Sort by <select class="plain-select" onchange="setDashboardRosterSort(this.value)" aria-label="Sort personnel by"><option value="department" ${dashboardRosterSort === 'department' ? 'selected' : ''}>Department / section</option><option value="status" ${dashboardRosterSort === 'status' ? 'selected' : ''}>Absence code</option></select></label>
+        <div class="roster-summary" aria-label="Personnel summary">
+          <div><strong>${rosterMemberCount}</strong><span>People shown</span></div>
+          <div><strong>${rosterDepartmentCount}</strong><span>Departments</span></div>
+          <div><strong>${rosterDisplayGroups.length}</strong><span>${dashboardRosterSort === 'status' ? 'Status codes' : 'Sections / groups'}</span></div>
+        </div>
+      </div>
+      ${rosterDisplayGroups.length ? `<div class="roster-table-wrap"><table class="roster-table"><thead><tr><th>Person</th><th>Role</th><th>Department</th><th>Section</th><th>Today</th></tr></thead><tbody>${rosterDisplayGroups.map(group => `
+        <tr class="roster-table-group"><th colspan="5">${group.status ? `<span>${statusBadge(group.status)}</span>` : `<span>${esc(group.dept)}</span><span>${esc(group.subdept || 'General')}</span>`}<small>${group.emps.length} member${group.emps.length !== 1 ? 's' : ''}</small></th></tr>
+        ${group.emps.map(emp => {
+          const entry = getEntryObj(`${emp.id}_${today}`);
+          const key = entry?.status ?? 'at_work';
+          return `<tr><td class="roster-person-name">${esc(emp.name)}</td><td>${esc(emp.role || '—')}</td><td>${esc(emp.department || '—')}</td><td>${esc(employeeHierarchyLeaf(emp) || '—')}</td><td>${statusBadge(key)}</td></tr>`;
+        }).join('')}`).join('')}</tbody></table></div>` : '<div class="empty-note" style="padding:24px">No personnel yet.</div>'}
+    </div>
     <div class="dash-grid-main mb-6">
-      <div class="dash-left-column">
       <div class="card">
         <div class="card-title mb-4" style="font-size:15px">Upcoming Absences</div>
         ${upcoming.length
-          ? `<div style="max-height:220px;overflow:auto;padding-right:6px">${[...upcomingByDate.entries()].slice(0, 30).map(([date, items]) => `
-              <div class="absence-row" style="align-items:flex-start;justify-content:flex-start;flex-wrap:wrap;padding:8px 0;">
-                <div style="font-size:12px;font-weight:700;color:var(--text);flex:0 0 auto">${fmtMed(date)}:</div>
-                <div style="font-size:13.5px;font-weight:500;line-height:1.4;flex:1 1 260px;min-width:0">${items.map(upcomingInlineName).join(', ')}</div>
-              </div>`).join('')}</div>`
+          ? `<div class="roster-table-wrap upcoming-absence-wrap"><table class="roster-table upcoming-absence-table"><thead><tr><th>Date</th><th>Name</th><th>Role</th><th>Reason</th></tr></thead><tbody>${upcoming.map(item => `<tr><td>${fmtMed(item.date)}</td><td class="roster-person-name">${esc(item.emp.name)}</td><td>${esc(item.emp.role || '—')}</td><td>${esc([item.destination, item.reason].filter(Boolean).join(' · ') || '—')}</td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty-note" style="height:120px;display:flex;align-items:center;justify-content:center">No upcoming absences scheduled.</div>'}
-      </div>
-      <div class="dash-grid-roster">
-        ${rosterGroups.length ? rosterGroups.map(group => `
-          <div class="card">
-            <div class="flex items-center justify-between mb-4">
-              <div><div class="card-title roster-group-title" style="font-size:14px">${esc([group.dept, group.subdept].filter(Boolean).join(' · '))}</div></div>
-              <div class="muted text-sm">${group.emps.length} member${group.emps.length !== 1 ? 's' : ''}</div>
-            </div>
-            ${group.emps.map(emp => {
-              const entry = getEntryObj(`${emp.id}_${today}`);
-              const key = entry?.status ?? 'at_work';
-              return `<div class="roster-row"><div style="min-width:0"><div style="font-size:13.5px;font-weight:500">${esc(emp.name)}</div><div class="muted" style="font-size:11.5px">${esc(emp.role || '')}</div></div>${statusBadge(key)}</div>`;
-            }).join('')}
-          </div>`).join('') : '<div class="card empty-note">No personnel yet.</div>'}
-      </div>
       </div>
       <div class="card">
         <div class="flex items-center justify-between" style="gap:8px;flex-wrap:wrap">
@@ -9151,7 +9500,7 @@ function renderDashboard() {
           <span>Absence: ${formatLoadMeasure(workloadTeamTotals.absenceUnits, workloadTeamTotals.absenceHours)}</span>
           <span>Staffing load: <b style="color:var(--text)">${Number.isFinite(workloadTeamStaffing.percentage) ? `${formatHoursNumber(workloadTeamStaffing.percentage)}%` : 'Overloaded'}</b> · ${workloadTeamStaffing.label}</span>
         </div>
-        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">${renderTeamStaffingChart(workloadDates)}</div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">${renderTeamStaffingChart(workloadDates, dashboardEmployees)}</div>
         <div style="display:flex;flex-direction:column;gap:0;margin-top:12px;max-height:300px;overflow:auto;padding-right:6px">${workloadOverview}</div>
         <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
           <div class="flex items-center justify-between" style="gap:8px;flex-wrap:wrap">
@@ -9510,11 +9859,10 @@ async function resetSummaryColumns() {
 }
 function setSummarySort(key) {
   if (summarySortKey === key) summarySortDir = summarySortDir === 'asc' ? 'desc' : 'asc';
-  else { summarySortKey = key; summarySortDir = key === 'name' ? 'asc' : 'desc'; }
-  renderSummary();
-}
-function setSummarySortDirection(direction) {
-  summarySortDir = direction === 'asc' ? 'asc' : 'desc';
+  else {
+    summarySortKey = key;
+    summarySortDir = key === 'name' ? 'asc' : 'desc';
+  }
   renderSummary();
 }
 function setSummaryViewMode(mode) {
@@ -9527,9 +9875,102 @@ function setSummaryGraphOption(kind, value) {
   if (kind === 'direction') summaryGraphDir = value === 'asc' ? 'asc' : 'desc';
   renderSummary();
 }
+function summaryEmployeeGroups() {
+  const root = new Map();
+  const addNode = (children, label, key) => {
+    if (!children.has(key)) children.set(key, { label, key, children: new Map(), employeeIds: [] });
+    return children.get(key);
+  };
+  employees.forEach(employee => {
+    const department = employee.department || (employeeSection(employee) ? 'Independent sections' : 'Unassigned department');
+    const path = [
+      [employee.organisation || 'Unassigned organisation', 'organisation'],
+      [department, 'department'],
+      [employee.section || employee.subdepartment || 'Unassigned section', 'section'],
+      [employee.process || 'Unassigned process', 'process'],
+      [employee.team || 'Unassigned team', 'team'],
+    ];
+    let children = root;
+    let node = null;
+    const parentLabels = [];
+    for (const [label, level] of path) {
+      parentLabels.push(label);
+      node = addNode(children, label, `${level}:${hierarchyOrderKey(...parentLabels)}`);
+      node.employeeIds.push(employee.id);
+      children = node.children;
+    }
+    node.children.set(`employee:${employee.id}`, { label: employee.name, key: `employee:${employee.id}`, employeeId: employee.id, employeeIds: [employee.id], children: new Map() });
+  });
+  return root;
+}
+function renderSummaryEmployeePicker() {
+  const modal = document.getElementById('summary-employee-picker');
+  if (!modal) return;
+  const selected = summarySelectedEmployeeIds || new Set(employees.map(employee => employee.id));
+  const renderNodes = (nodes, depth = 0) => [...nodes.values()]
+    .sort((left, right) => {
+      const leftNode = [...nodes.entries()].find(([, childNode]) => childNode === left)?.[0] || '';
+      const rightNode = [...nodes.entries()].find(([, childNode]) => childNode === right)?.[0] || '';
+      return compareHierarchyAssignment(left.label, right.label)
+        || String(left.label).localeCompare(String(right.label), 'nb', { sensitivity: 'base' })
+        || String(leftNode).localeCompare(String(rightNode), 'nb', { sensitivity: 'base' });
+    })
+    .map(node => {
+      const ids = node.employeeIds || [];
+      const selectedCount = ids.filter(id => selected.has(id)).length;
+      const isEmployee = Number.isFinite(node.employeeId);
+      const input = `<input type="checkbox" data-employee-ids="${encodeURIComponent(JSON.stringify(isEmployee ? [node.employeeId] : ids))}" ${selectedCount === ids.length && ids.length ? 'checked' : ''} ${selectedCount > 0 && selectedCount < ids.length ? 'data-indeterminate="true"' : ''} onchange="toggleSummaryEmployeeGroup(decodeURIComponent(this.dataset.employeeIds),this.checked)">`;
+      const row = `<label style="display:flex;align-items:center;gap:8px;padding:4px 6px;margin-left:${depth * 16}px;border-radius:6px;${isEmployee ? '' : 'font-weight:600;'}"><span>${input}</span><span>${esc(node.label)}</span></label>`;
+      return row + (node.children.size ? renderNodes(node.children, depth + 1) : '');
+    }).join('');
+  modal.innerHTML = `<div class="modal" style="width:min(620px,calc(100vw - 32px));max-height:86vh;display:flex;flex-direction:column">
+    <div class="flex items-center justify-between" style="gap:12px"><div><h3 style="margin:0">Select Summary employees</h3><div class="muted text-sm" style="margin-top:4px">Choose who to include in Summary statistics.</div></div><button class="icon-btn" type="button" aria-label="Close" onclick="closeModal('summary-employee-picker')">&times;</button></div>
+    <div class="flex gap-2" style="margin:12px 0"><button class="btn btn-sm" type="button" onclick="setSummaryEmployeeSelection(true)">All</button><button class="btn btn-sm" type="button" onclick="setSummaryEmployeeSelection(false)">None</button><span class="muted text-sm" style="align-self:center;margin-left:auto">${selected.size} selected</span></div>
+    <div style="overflow:auto;min-height:120px;border:1px solid var(--border);border-radius:8px;padding:8px">${employees.length ? renderNodes(summaryEmployeeGroups()) : '<div class="empty-note">No employees available.</div>'}</div>
+    <div class="modal-actions"><button class="btn" type="button" onclick="closeModal('summary-employee-picker')">Done</button></div>
+  </div>`;
+  modal.querySelectorAll('input[data-indeterminate="true"]').forEach(input => { input.indeterminate = true; });
+}
+function openSummaryEmployeePicker() {
+  if (!(summarySelectedEmployeeIds instanceof Set)) summarySelectedEmployeeIds = new Set(employees.map(employee => employee.id));
+  let modal = document.getElementById('summary-employee-picker');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'summary-employee-picker';
+    modal.className = 'modal-bg';
+    document.body.appendChild(modal);
+  }
+  renderSummaryEmployeePicker();
+  modal.classList.add('open');
+}
+function toggleSummaryEmployeeGroup(employeeIdsJson, checked) {
+  if (!(summarySelectedEmployeeIds instanceof Set)) summarySelectedEmployeeIds = new Set(employees.map(employee => employee.id));
+  let ids = [];
+  try { ids = JSON.parse(employeeIdsJson); } catch (error) { return; }
+  ids.forEach(id => checked ? summarySelectedEmployeeIds.add(Number(id)) : summarySelectedEmployeeIds.delete(Number(id)));
+  renderSummaryEmployeePicker();
+  renderSummary();
+}
+function setSummaryEmployeeSelection(checked) {
+  summarySelectedEmployeeIds = checked ? new Set(employees.map(employee => employee.id)) : new Set();
+  renderSummaryEmployeePicker();
+  renderSummary();
+}
+function toggleSummaryTeam(team) {
+  if (collapsedSummaryTeams.has(team)) collapsedSummaryTeams.delete(team);
+  else collapsedSummaryTeams.add(team);
+  renderSummary();
+}
+function toggleSummaryGlobalRanking() {
+  summaryGlobalRankingCollapsed = !summaryGlobalRankingCollapsed;
+  renderSummary();
+}
 function renderSummary() {
   const range = summaryRange();
-  const rows = computeSummaryRows(range.start, range.end);
+  if (!(summarySelectedEmployeeIds instanceof Set)) summarySelectedEmployeeIds = new Set(employees.map(employee => employee.id));
+  else summarySelectedEmployeeIds = new Set([...summarySelectedEmployeeIds].filter(id => employees.some(employee => employee.id === id)));
+  const rows = computeSummaryRows(range.start, range.end).filter(row => summarySelectedEmployeeIds.has(row.emp.id));
+  const summaryEmployeeCount = summarySelectedEmployeeIds.size;
   const columnSettings = effectiveSummaryColumns();
   const visibleStatuses = statuses.filter(status => columnSettings.statusKeys.includes(status.key));
   const visibleWorkCodes = sortedPlanningItems(appSettings.workCodes).filter(code => columnSettings.workCodeIds.includes(code.id));
@@ -9609,24 +10050,6 @@ function renderSummary() {
     ${visibleWorkCodes.map(code => `<th class="num" style="color:${code.color}" title="${esc(code.name)} · Full days and timed hours" data-sort="wc:${esc(code.id)}" onclick="setSummarySort(this.dataset.sort)">${esc(code.abbreviation || code.name)} <span style="opacity:.55">${sortIcon('wc:' + code.id)}</span></th>`).join('')}
     <th class="num" data-sort="total" onclick="setSummarySort(this.dataset.sort)" title="Full days and timed hours matching the selected columns">Total <span style="opacity:.55">${sortIcon('total')}</span></th>
   </tr>`;
-  const sortOptions = [
-    { key: 'people', label: 'Hierarchy' }, { key: 'name', label: 'Employee' },
-    ...visibleStatuses.map(item => ({ key: item.key, label: item.label })),
-    ...(hasAbsence ? [{ key: '__absence', label: 'Absence' }] : []),
-    ...(hasOoo ? [{ key: '__ooo', label: 'OOO' }] : []),
-    { key: '__overtime', label: 'Overtime' },
-    ...visibleWorkCodes.map(item => ({ key: `wc:${item.id}`, label: item.name })),
-    { key: 'total', label: 'Total' },
-  ];
-  const tableSortControls = `<div class="sum-sort-controls" aria-label="Table sorting">
-    <span class="sum-control-caption">Sort table</span>
-    <select class="plain-select" onchange="setSummarySort(this.value)">${sortOptions.map(item => `<option value="${esc(item.key)}" ${item.key === summarySortKey ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select>
-    <select class="plain-select" onchange="setSummarySortDirection(this.value)" aria-label="Sort direction">
-      <option value="desc" ${summarySortDir === 'desc' ? 'selected' : ''}>High to low</option>
-      <option value="asc" ${summarySortDir === 'asc' ? 'selected' : ''}>Low to high</option>
-    </select>
-  </div>`;
-
   const totalCols = 3 + visibleStatuses.length + visibleWorkCodes.length + (hasAbsence ? 1 : 0) + (hasOoo ? 1 : 0);
   const minibarFor = (items, field, label) => {
     const total = items.reduce((sum, item) => sum + (item.measure[field] || 0), 0);
@@ -9659,10 +10082,10 @@ function renderSummary() {
     </tr>`;
   };
   const bodyHtml = sorted.length ? (numericSort
-    ? `<tr class="sum-team-row"><td colspan="${totalCols}">Global ranking · ${rankedRows.length} employees</td></tr>${rankedRows.map(employeeRowHtml).join('')}`
+    ? `<tr class="sum-team-row"><td colspan="${totalCols}"><button class="icon-btn" type="button" style="vertical-align:middle;margin-right:5px" title="${summaryGlobalRankingCollapsed ? 'Expand global ranking' : 'Collapse global ranking'}" aria-label="${summaryGlobalRankingCollapsed ? 'Expand global ranking' : 'Collapse global ranking'}" aria-expanded="${!summaryGlobalRankingCollapsed}" onclick="toggleSummaryGlobalRanking()">${svgIcon(summaryGlobalRankingCollapsed ? 'chevronRight' : 'chevronDown')}</button>Global ranking · ${rankedRows.length} employees</td></tr>${summaryGlobalRankingCollapsed ? '' : rankedRows.map(employeeRowHtml).join('')}`
     : teamGroups.map(group => `
-      <tr class="sum-team-row" data-team="${esc(group.team)}"><td colspan="${totalCols}">${esc(group.team)} · ${group.rows.length} ${group.rows.length === 1 ? 'employee' : 'employees'}</td></tr>
-      ${group.rows.map(employeeRowHtml).join('')}`).join('')) : `<tr><td colspan="${totalCols}" class="empty-note">No data found for ${range.label}.</td></tr>`;
+      <tr class="sum-team-row" data-team="${esc(group.team)}"><td colspan="${totalCols}"><button class="icon-btn" type="button" style="vertical-align:middle;margin-right:5px" title="${collapsedSummaryTeams.has(group.team) ? 'Expand' : 'Collapse'} ${esc(group.team)}" aria-label="${collapsedSummaryTeams.has(group.team) ? 'Expand' : 'Collapse'} ${esc(group.team)}" aria-expanded="${!collapsedSummaryTeams.has(group.team)}" onclick="toggleSummaryTeam(this.closest('tr').dataset.team)">${svgIcon(collapsedSummaryTeams.has(group.team) ? 'chevronRight' : 'chevronDown')}</button>${esc(group.team)} · ${group.rows.length} ${group.rows.length === 1 ? 'employee' : 'employees'}</td></tr>
+      ${collapsedSummaryTeams.has(group.team) ? '' : group.rows.map(employeeRowHtml).join('')}`).join('')) : `<tr><td colspan="${totalCols}" class="empty-note">No data found for ${range.label}.</td></tr>`;
 
   const totals = sorted.reduce((acc, row) => {
     statuses.forEach(st => { acc.status[st.key] = addLoadMeasure(acc.status[st.key], statusMeasure(row, st.key)); });
@@ -9725,10 +10148,10 @@ function renderSummary() {
     <div class="flex items-center justify-between mb-4" style="flex-wrap:wrap;gap:12px">
       <div>
         <div class="page-title">Summary</div>
-        <div class="page-sub">Selected statuses, absence totals, overtime, and Work Codes for ${range.label}. Period: ${range.subtitle}.</div>
+        <div class="page-sub">Selected statuses, absence totals, overtime, and Work Codes for ${range.label}. Period: ${range.subtitle} · ${summaryEmployeeCount} employee${summaryEmployeeCount === 1 ? '' : 's'} selected.</div>
       </div>
       <div class="year-nav" style="gap:8px">
-        ${summaryViewMode === 'table' ? tableSortControls : ''}
+        <button class="btn" type="button" onclick="openSummaryEmployeePicker()">Employees (${summaryEmployeeCount})</button>
         <button class="btn" onclick="openSummaryColumns()">Columns</button>
         <div class="sum-view-switch" role="group" aria-label="Summary view">
           <button class="btn ${summaryViewMode === 'table' ? 'active' : ''}" onclick="setSummaryViewMode('table')">Table</button>
