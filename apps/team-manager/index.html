@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=30">
+<link rel="stylesheet" href="css/styles.css?v=31">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -151,10 +151,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <p class="modal-desc">Personnel details, hierarchy order, contact numbers, address and category tags.</p>
     <div class="form-row"><label>Full name * <span class="muted">(max 30 characters)</span></label><input id="ef-name" maxlength="30" placeholder="Jane Smith"></div>
     <div class="form-row"><label>Email *</label><input id="ef-email" type="email" placeholder="jane@company.com"></div>
-    <div class="form-row-2">
-      <div class="form-row" style="margin:0"><label>Role / title *</label><input id="ef-role" placeholder="Engineer"></div>
-      <div class="form-row" style="margin:0"><label>Organisation</label><input id="ef-organisation" list="ef-organisations" placeholder="Organisation name"></div>
-    </div>
+    <div class="form-row"><label>Role / title *</label><input id="ef-role" placeholder="Engineer"></div>
     <div class="form-row-2">
       <div class="form-row" style="margin:0"><label>Department <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-dept" list="ef-departments" placeholder="Department name"></div>
       <div class="form-row" style="margin:0"><label>Section <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-section" list="ef-sections" placeholder="Section name"></div>
@@ -163,8 +160,8 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <div class="form-row" style="margin:0"><label>Process <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-process" list="ef-processes" placeholder="Process name"></div>
       <div class="form-row" style="margin:0"><label>Team <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-team" list="ef-teams" placeholder="Alpha Team"></div>
     </div>
-    <datalist id="ef-organisations"></datalist><datalist id="ef-departments"></datalist><datalist id="ef-sections"></datalist><datalist id="ef-processes"></datalist><datalist id="ef-teams"></datalist>
-    <div class="form-hint">Hierarchy: Organisation → Department → Section → Process → Team. Process and Team are optional.</div>
+    <datalist id="ef-departments"></datalist><datalist id="ef-sections"></datalist><datalist id="ef-processes"></datalist><datalist id="ef-teams"></datalist>
+    <div class="form-hint">Hierarchy: Organisation → Department → Section → Process → Team. The organisation is set once in Personnel; Process and Team are optional.</div>
     <div class="form-row"><label>Level / Rank <span class="muted" style="font-weight:400">(optional; e.g. OR-7 / MAY / COM)</span></label><input id="ef-level" placeholder="OR-7"></div>
     <div class="form-row-2">
       <div class="form-row" style="margin:0"><label>Birthday <span class="muted" style="font-weight:400">(optional)</span></label><input id="ef-birthday" type="date"></div>
@@ -201,7 +198,6 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
     <h3>Bulk edit personnel hierarchy</h3>
     <p class="modal-desc" id="bulk-personnel-count"></p>
     <p class="form-hint">Enter a new value to replace the selected employees’ values. Use Clear to remove a current value. Leave both untouched to keep that field as-is.</p>
-    <div class="form-row"><label>Organisation</label><div class="flex gap-2"><input id="bulk-organisation" style="flex:1"><label><input id="bulk-organisation-clear" type="checkbox" onchange="document.getElementById('bulk-organisation').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-organisation-hint"></div></div>
     <div class="form-row"><label>Department</label><div class="flex gap-2"><input id="bulk-department" style="flex:1"><label><input id="bulk-department-clear" type="checkbox" onchange="document.getElementById('bulk-department').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-department-hint"></div></div>
     <div class="form-row"><label>Section</label><div class="flex gap-2"><input id="bulk-section" style="flex:1"><label><input id="bulk-section-clear" type="checkbox" onchange="document.getElementById('bulk-section').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-section-hint"></div></div>
     <div class="form-row"><label>Process</label><div class="flex gap-2"><input id="bulk-process" style="flex:1"><label><input id="bulk-process-clear" type="checkbox" onchange="document.getElementById('bulk-process').disabled=this.checked"> Clear</label></div><div class="form-hint" id="bulk-process-hint"></div></div>
@@ -488,7 +484,6 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
       <input id="set-app-name" placeholder="e.g. Operations Team">
       <div class="form-hint">Shown as the main planning header. ATLAS remains the application name in the corner.</div>
     </div>
-    <div class="form-row"><label>Default personnel organisation</label><input id="set-default-personnel-organisation" maxlength="120" placeholder="e.g. CIS Battalion"><div class="form-hint">Prefilled when adding personnel; existing records are not changed.</div></div>
     <div class="form-row"><label>Schedule</label><button class="btn" type="button" onclick="openScheduleSettings()">Open Schedule settings</button><div class="form-hint">Core workday, grid behavior, special days, planning options, and activity deadline.</div></div>
     <div class="form-row"><label>Statuses &amp; Activity Codes</label><button class="btn" type="button" onclick="closeModal('settings-modal');openStatusManager()">Manage Statuses &amp; Activity Codes</button><div class="form-hint">Daily statuses and absences, activity categories, and work codes.</div></div>
     <div class="form-row"><label>Organisation Structure</label><button class="btn" type="button" onclick="openOrganisationStructure()">Manage Organisation Structure</button><div class="form-hint">Reorder and review Departments, Sections, Processes, and Teams.</div></div>
@@ -656,7 +651,7 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
 <div class="modal-bg" id="personnel-settings-modal">
   <div class="modal" style="width:620px;max-height:calc(100vh - 32px)">
     <div class="flex items-center justify-between" style="gap:12px"><h3 style="margin:0">Personnel settings</h3><button class="icon-btn" title="Close" onclick="closeModal('personnel-settings-modal')">&times;</button></div>
-    <p class="modal-desc">Configure staffing thresholds and access the personnel hierarchy configuration.</p>
+    <p class="modal-desc">Set the single organisation name used by this planner and configure personnel hierarchy.</p>
     <div class="form-row"><label>Staffing-load thresholds</label><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"><div><label class="muted text-sm">Light up to %</label><input id="personnel-light-max" type="number" min="0" max="200" step="1"></div><div><label class="muted text-sm">Normal up to %</label><input id="personnel-normal-max" type="number" min="1" max="300" step="1"></div><div><label class="muted text-sm">High up to %</label><input id="personnel-high-max" type="number" min="1" max="500" step="1"></div></div><div class="form-hint">Values above High are Overloaded.</div></div>
     <div class="form-row"><label>Hierarchy configuration</label><button class="btn" type="button" onclick="closeModal('personnel-settings-modal');openOrganisationStructure()">Manage Organisation Structure</button><button class="btn" type="button" onclick="closeModal('personnel-settings-modal');nav('employees');deptColorsExpanded=true;renderEmployees()" style="margin-left:8px">Manage hierarchy colors</button></div>
     <div class="modal-actions"><button class="btn" onclick="closeModal('personnel-settings-modal')">Cancel</button><button class="btn btn-primary" onclick="savePersonnelSettings()">Save personnel settings</button></div>
@@ -750,6 +745,6 @@ body.dark .atlas-auth-card #atlas-auth-error{color:#fca5a5}
   </div>
 </div>
 <script src="app/workwheel.js?v=8"></script>
-<script src="app/app.js?v=39"></script>
+<script src="app/app.js?v=40"></script>
 </body>
 </html>

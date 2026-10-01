@@ -133,7 +133,7 @@ const LOCAL_ONLY_APP_SETTING_KEYS = [
 
 let appSettings = {
   appName: 'Organisation',
-  defaultPersonnelOrganisation: '',
+  personnelOrganisationName: 'Organisation',
   darkMode: false,
   autoSaveEnabled: true,
   autoSyncEnabled: true,
@@ -521,7 +521,7 @@ function loadSettings() {
         : {};
       appSettings.activityTypes = normalizeActivityTypes(parsed.activityTypes);
         appSettings.workwheelGridDisplayMode = ['cells', 'both', 'row', 'none'].includes(parsed.workwheelGridDisplayMode) ? parsed.workwheelGridDisplayMode : 'cells';
-      appSettings.defaultPersonnelOrganisation = String(parsed.defaultPersonnelOrganisation || '').trim().slice(0, 120);
+      appSettings.personnelOrganisationName = String(parsed.personnelOrganisationName || parsed.defaultPersonnelOrganisation || '').trim().slice(0, 120) || 'Organisation';
       appSettings.workCodes = normalizeWorkCodes(parsed.workCodes);
       appSettings.securityLabel = normalizeSecurityLabel(parsed.securityLabel);
       appSettings.shiftRotationEnabled = parsed.shiftRotationEnabled === true;
@@ -738,7 +738,6 @@ function applyAppName() {
 
 function openSettings() {
   document.getElementById('set-app-name').value = appSettings.appName;
-  document.getElementById('set-default-personnel-organisation').value = appSettings.defaultPersonnelOrganisation || '';
   const secLabel = normalizeSecurityLabel(appSettings.securityLabel || {});
   document.getElementById('set-security-label-enabled').checked = secLabel.enabled === true;
   document.getElementById('set-security-label-text').value = secLabel.text || '';
@@ -1116,6 +1115,16 @@ async function savePersonnelSettings() {
   });
   closeModal('personnel-settings-modal');
   renderPage();
+}
+async function savePersonnelOrganisationName() {
+  const input = document.getElementById('personnel-organisation-name');
+  const personnelOrganisationName = String(input?.value || '').trim().slice(0, 120) || 'Organisation';
+  await mutateState('savePersonnelOrganisationName', () => {
+    appSettings.personnelOrganisationName = personnelOrganisationName;
+    employees.forEach(employee => { employee.organisation = personnelOrganisationName; });
+  }, { saveDisk: true });
+  renderEmployees();
+  showToast(`Organisation set to ${personnelOrganisationName}.`, 3500);
 }
 function renderOrganisationStructure() {
   const list = document.getElementById('organisation-structure-list');
@@ -1771,7 +1780,6 @@ async function confirmHolidayImport() {
 }
 async function saveSettings() {
   const name = document.getElementById('set-app-name').value.trim();
-  const defaultPersonnelOrganisation = document.getElementById('set-default-personnel-organisation').value.trim().slice(0, 120);
   const securityLabel = normalizeSecurityLabel({
     enabled: document.getElementById('set-security-label-enabled').checked,
     text: document.getElementById('set-security-label-text').value,
@@ -1784,7 +1792,6 @@ async function saveSettings() {
   const myScheduleLookaheadDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-my-schedule-lookahead-days')?.value) || 31)));
   await mutateState('saveSettings', () => {
     if (name) appSettings.appName = name;
-    appSettings.defaultPersonnelOrganisation = defaultPersonnelOrganisation;
     appSettings.securityLabel = securityLabel;
     if (typeof showRank === 'boolean') appSettings.showLevelRankInSchedule = showRank;
     appSettings.workwheelEnabled = workwheelEnabled;
@@ -3190,10 +3197,14 @@ function loadFromData(data) {
       if (Number.isFinite(eid) && Number.isFinite(cid)) (joinCatIds[eid] = joinCatIds[eid] || []).push(cid);
     }
   }
+  const configuredPersonnelOrganisation = String(normalized.appSettings?.personnelOrganisationName || normalized.appSettings?.defaultPersonnelOrganisation || '').trim();
+  const legacyOrganisation = (normalized.employees || []).map(employee => String(employee.organisation || employee.organization || '').trim()).find(Boolean);
+  const legacyPlannerName = String(normalized.appSettings?.appName || '').trim();
+  appSettings.personnelOrganisationName = String(configuredPersonnelOrganisation || legacyOrganisation || legacyPlannerName || 'Organisation').trim().slice(0, 120) || 'Organisation';
   employees = (normalized.employees || []).map(e => ({
     ...e,
     id: +e.id,
-    organisation: String(e.organisation || e.organization || '').trim(),
+    organisation: appSettings.personnelOrganisationName,
     section: String(e.section || '').trim(),
     process: String(e.process || '').trim(),
     team: String(e.team || '').trim(),
@@ -8193,7 +8204,6 @@ function openBulkPersonnelEdit() {
     if (hint) hint.textContent = currentValues.length === 1 ? `Current: ${currentValues[0] || '(blank)'}` : `Mixed values: ${currentValues.filter(Boolean).join(', ') || '(blank)'}. Leave unchanged by keeping this field blank, or check Clear to remove it for everyone.`;
   };
   document.getElementById('bulk-personnel-count').textContent = `${selected.length} employee${selected.length === 1 ? '' : 's'} selected`;
-  setField('bulk-organisation', values('organisation'));
   setField('bulk-department', values('department'));
   setField('bulk-section', selected.map(employee => String(employee.section || employee.subdepartment || '').trim()));
   setField('bulk-process', values('process'));
@@ -8204,7 +8214,6 @@ async function applyBulkPersonnelEdit() {
   const selected = employees.filter(employee => selectedPersonnelIds.has(employee.id));
   if (!selected.length) return;
   const changes = {
-    organisation: document.getElementById('bulk-organisation-clear')?.checked ? '' : (document.getElementById('bulk-organisation')?.value.trim() || null),
     department: document.getElementById('bulk-department-clear')?.checked ? '' : (document.getElementById('bulk-department')?.value.trim() || null),
     section: document.getElementById('bulk-section-clear')?.checked ? '' : (document.getElementById('bulk-section')?.value.trim() || null),
     process: document.getElementById('bulk-process-clear')?.checked ? '' : (document.getElementById('bulk-process')?.value.trim() || null),
@@ -8217,7 +8226,6 @@ async function applyBulkPersonnelEdit() {
   if (!confirm(`Apply the entered hierarchy changes to ${selected.length} selected employee${selected.length === 1 ? '' : 's'}?`)) return;
   await mutateState('applyBulkPersonnelEdit', () => {
     for (const employee of selected) {
-      if (changes.organisation !== null) employee.organisation = changes.organisation;
       if (changes.department !== null) employee.department = changes.department;
       if (changes.section !== null) {
         employee.section = changes.section;
@@ -8245,7 +8253,6 @@ async function dropPersonnel(event, targetId) {
   if (!sameGroup && !confirm(`Move ${source.name} into ${employeeHierarchyPath(target) || 'this hierarchy group'}?`)) return;
   await mutateState('dropPersonnel', () => {
     if (!sameGroup) {
-      source.organisation = target.organisation || '';
       source.department = target.department || '';
       source.section = target.section || target.subdepartment || '';
       source.process = target.process || '';
@@ -8441,6 +8448,13 @@ function renderEmployees() {
         <button class="btn btn-primary" onclick="openEmpModal()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Add Employee</button>
       </div>
     </div>
+    <div class="card mb-4" style="padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px"><label for="personnel-organisation-name" style="display:block;margin-bottom:5px;font-size:12px;font-weight:700">Organisation name</label><input class="personnel-organisation-input" id="personnel-organisation-name" maxlength="120" value="${esc(appSettings.personnelOrganisationName || 'Organisation')}" placeholder="Organisation"></div>
+        <button class="btn btn-primary btn-sm" type="button" onclick="savePersonnelOrganisationName()">Save organisation</button>
+      </div>
+      <div class="form-hint" style="margin-top:7px">One organisation for this planner. Saving updates all personnel; departments and lower hierarchy remain unchanged.</div>
+    </div>
     <div class="flex items-center gap-2 mb-4" style="flex-wrap:wrap">
       <div class="search-box">
         <span class="search-ico"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></span>
@@ -8525,13 +8539,12 @@ function openEmpModal(id) {
   document.getElementById('ef-name').value = emp?.name || '';
   document.getElementById('ef-email').value = emp?.email || '';
   document.getElementById('ef-role').value = emp?.role || '';
-  document.getElementById('ef-organisation').value = emp?.organisation || appSettings.defaultPersonnelOrganisation || '';
   document.getElementById('ef-dept').value = emp?.department || '';
   document.getElementById('ef-section').value = emp?.section || emp?.subdepartment || '';
   document.getElementById('ef-process').value = emp?.process || '';
   document.getElementById('ef-team').value = emp?.team || '';
   updateEmployeeHierarchySuggestions();
-  ['ef-organisation', 'ef-dept', 'ef-section', 'ef-process'].forEach(fieldId => {
+  ['ef-dept', 'ef-section', 'ef-process'].forEach(fieldId => {
     const field = document.getElementById(fieldId);
     if (field) field.oninput = updateEmployeeHierarchySuggestions;
   });
@@ -8558,13 +8571,11 @@ function setDataListOptions(id, values) {
   if (list) list.innerHTML = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' })).map(value => `<option value="${esc(value)}"></option>`).join('');
 }
 function updateEmployeeHierarchySuggestions() {
-  const organisation = document.getElementById('ef-organisation')?.value.trim() || '';
   const department = document.getElementById('ef-dept')?.value.trim() || '';
   const section = document.getElementById('ef-section')?.value.trim() || '';
   const process = document.getElementById('ef-process')?.value.trim() || '';
-  setDataListOptions('ef-organisations', employees.map(emp => emp.organisation));
-  setDataListOptions('ef-departments', employees.filter(emp => !organisation || emp.organisation === organisation).map(emp => emp.department));
-  setDataListOptions('ef-sections', employees.filter(emp => (!organisation || emp.organisation === organisation) && (!department || emp.department === department)).map(emp => emp.section || emp.subdepartment));
+  setDataListOptions('ef-departments', employees.map(emp => emp.department));
+  setDataListOptions('ef-sections', employees.filter(emp => !department || emp.department === department).map(emp => emp.section || emp.subdepartment));
   setDataListOptions('ef-processes', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section)).map(emp => emp.process));
   setDataListOptions('ef-teams', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section) && (!process || emp.process === process)).map(emp => emp.team));
 }
@@ -8572,7 +8583,7 @@ async function saveEmployee(addAnother = false) {
   const name = document.getElementById('ef-name').value.trim();
   const email = document.getElementById('ef-email').value.trim();
   const role = document.getElementById('ef-role').value.trim();
-  const organisation = document.getElementById('ef-organisation').value.trim();
+  const organisation = appSettings.personnelOrganisationName || 'Organisation';
   const dept = document.getElementById('ef-dept').value.trim();
   const section = document.getElementById('ef-section').value.trim();
   const process = document.getElementById('ef-process').value.trim();
@@ -8626,11 +8637,11 @@ async function completeEmployeeSave(rec, addAnother = false) {
   }, { saveDisk: true });
 
   if (addAnother) {
+    editingEmpId = null;
     document.getElementById('emp-modal-title').textContent = 'Add Employee';
     document.getElementById('ef-name').value = '';
     document.getElementById('ef-email').value = '';
     document.getElementById('ef-role').value = '';
-    document.getElementById('ef-organisation').value = rec.organisation || '';
     document.getElementById('ef-dept').value = rec.department || '';
     document.getElementById('ef-section').value = rec.section || '';
     document.getElementById('ef-process').value = rec.process || '';

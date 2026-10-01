@@ -577,6 +577,9 @@ body.dark .activity-past-toggle.active:hover { color: #0f1724; }
 .form-row input, .form-row select, .form-row textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13.5px; font-family: inherit; outline: none; background: var(--surface); color: var(--text); }
 .form-row input:focus, .form-row select:focus, .form-row textarea:focus { border-color: var(--accent-blue); }
 .form-row input:focus, .form-row select:focus, .form-row textarea:focus, .pk-input:focus, .search-box input:focus { box-shadow: var(--focus-ring); }
+.personnel-organisation-input { width:100%; max-width:460px; min-width:220px; padding:8px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface); color:var(--text); font:inherit; box-shadow:var(--shadow-sm); transition:border-color .15s,box-shadow .15s; }
+.personnel-organisation-input:hover { border-color:color-mix(in srgb,var(--accent-blue) 45%,var(--border)); }
+.personnel-organisation-input:focus { border-color:var(--accent-blue); outline:none; box-shadow:var(--focus-ring); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
 .form-row textarea { resize: vertical; min-height: 56px; }
