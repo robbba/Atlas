@@ -53,6 +53,96 @@ test('hosted setup, login, and protected planner access', async () => {
   }
 });
 
+test('hosted account email validation rejects malformed addresses on setup and account routes', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'atlas-email-validation-'));
+  const database = openDatabase({ filename: join(directory, 'atlas.db') });
+  const app = buildApp({ database });
+  try {
+    for (const email of ['invalid-address', 'admin@localhost', 'admin @example.test']) {
+      const invalidSetup = await app.inject({
+        method: 'POST', url: '/api/setup/create-admin',
+        payload: { name: 'Admin', username: 'admin', email, password: 'correct horse battery staple' },
+      });
+      assert.equal(invalidSetup.statusCode, 400, `setup should reject ${email}`);
+    }
+
+    const setup = await app.inject({
+      method: 'POST', url: '/api/setup/create-admin',
+      payload: { name: 'Admin', username: 'admin', email: 'admin@example.test', password: 'correct horse battery staple' },
+    });
+    assert.equal(setup.statusCode, 201);
+    const cookie = setup.headers['set-cookie']!.toString().split(';')[0];
+
+    const invalidProfile = await app.inject({
+      method: 'PATCH', url: '/api/me/profile', headers: { cookie }, payload: { email: 'not-an-email' },
+    });
+    assert.equal(invalidProfile.statusCode, 400);
+    const emptyProfile = await app.inject({
+      method: 'PATCH', url: '/api/me/profile', headers: { cookie }, payload: { email: '' },
+    });
+    assert.equal(emptyProfile.statusCode, 400);
+
+    const invalidNewAccount = await app.inject({
+      method: 'POST', url: '/api/admin/users', headers: { cookie },
+      payload: { name: 'Planner', username: 'planner', email: 'planner@localhost', password: 'another correct password', role: 'planner' },
+    });
+    assert.equal(invalidNewAccount.statusCode, 400);
+
+    const planner = database.createUser({ name: 'Planner', username: 'planner', email: 'planner@example.test', password: 'another correct password', role: 'planner' });
+    const invalidAccountUpdate = await app.inject({
+      method: 'PATCH', url: `/api/admin/users/${encodeURIComponent(planner.id)}`, headers: { cookie }, payload: { email: '' },
+    });
+    assert.equal(invalidAccountUpdate.statusCode, 400);
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('only admins may change global organization configuration in planner saves', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'atlas-organization-settings-'));
+  const database = openDatabase({ filename: join(directory, 'atlas.db') });
+  const app = buildApp({ database });
+  try {
+    const setup = await app.inject({ method: 'POST', url: '/api/setup/create-admin', payload: { name: 'Admin', username: 'admin', email: 'admin@example.test', password: 'correct horse battery staple' } });
+    const adminCookie = setup.headers['set-cookie']!.toString().split(';')[0];
+    const plannerUser = database.createUser({ name: 'Planner', username: 'planner', email: 'planner@example.test', password: 'planner correct password', role: 'planner' });
+    const plannerLogin = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username: 'planner', password: 'planner correct password' } });
+    const plannerCookie = plannerLogin.headers['set-cookie']!.toString().split(';')[0];
+    const initial = await app.inject({ method: 'GET', url: '/api/planner', headers: { cookie: adminCookie } });
+    const initialDocument = initial.json().document;
+
+    const adminUpdate = await app.inject({ method: 'POST', url: '/api/planner', headers: { cookie: adminCookie }, payload: {
+      expectedRevision: initial.json().revision,
+      document: { ...initialDocument, appSettings: { ...initialDocument.appSettings, personnelOrganisationName: 'CISBn Reitan', organizationHierarchyLevels: { department: true, section: true, process: false, team: false } } },
+    } });
+    assert.equal(adminUpdate.statusCode, 200);
+
+    const changed = adminUpdate.json().document;
+    const forbiddenOrganization = await app.inject({ method: 'POST', url: '/api/planner', headers: { cookie: plannerCookie }, payload: {
+      expectedRevision: adminUpdate.json().revision,
+      document: { ...changed, appSettings: { ...changed.appSettings, personnelOrganisationName: 'Different Organization' } },
+    } });
+    assert.equal(forbiddenOrganization.statusCode, 403);
+
+    const forbiddenLevels = await app.inject({ method: 'POST', url: '/api/planner', headers: { cookie: plannerCookie }, payload: {
+      expectedRevision: adminUpdate.json().revision,
+      document: { ...changed, appSettings: { ...changed.appSettings, organizationHierarchyLevels: { department: false, section: false, process: false, team: false } } },
+    } });
+    assert.equal(forbiddenLevels.statusCode, 403);
+
+    const operationalUpdate = await app.inject({ method: 'POST', url: '/api/planner', headers: { cookie: plannerCookie }, payload: {
+      expectedRevision: adminUpdate.json().revision,
+      document: { ...changed, savedAt: new Date().toISOString(), entriesMap: { ...changed.entriesMap, '999_2026-10-01': 'at_work' } },
+    } });
+    assert.equal(operationalUpdate.statusCode, 200);
+    assert.equal(database.getUserById(plannerUser.id)?.role, 'planner');
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('Workwheel data is shared, revisioned, and restricted to wheel editors', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'atlas-workwheel-'));
   const database = openDatabase({ filename: join(directory, 'atlas.db') });

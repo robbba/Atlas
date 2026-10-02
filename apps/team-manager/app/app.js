@@ -126,6 +126,21 @@ const APP_VERSION = '0.3.2';
 const DATA_VERSION = 9;
 const DEFAULT_WORK_CODES = [];
 const DEFAULT_SHIFT_TEMPLATES = [];
+const ORGANIZATION_HIERARCHY_LEVELS = ['department', 'section', 'process', 'team'];
+function normalizeOrganizationHierarchyLevels(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const levels = {};
+  for (const level of ORGANIZATION_HIERARCHY_LEVELS) levels[level] = source[level] !== false;
+  // Hierarchy levels are sequential; a deeper level requires every level above it.
+  for (let index = 1; index < ORGANIZATION_HIERARCHY_LEVELS.length; index++) {
+    if (!levels[ORGANIZATION_HIERARCHY_LEVELS[index - 1]]) levels[ORGANIZATION_HIERARCHY_LEVELS[index]] = false;
+  }
+  return levels;
+}
+function enabledOrganizationHierarchyLevels() {
+  const levels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
+  return ORGANIZATION_HIERARCHY_LEVELS.filter(level => levels[level]);
+}
 const LOCAL_ONLY_APP_SETTING_KEYS = [
   'darkMode', 'autoSaveEnabled', 'autoSyncEnabled', 'showOnlyConfirmedActivities', 'workwheelGridDisplayMode',
   'activityStatusFilter', 'jumpToTodayOnGridChange', 'autoActivityPageOnHorizontalScroll', 'specialDaysVisible',
@@ -134,6 +149,7 @@ const LOCAL_ONLY_APP_SETTING_KEYS = [
 let appSettings = {
   appName: 'Organisation',
   personnelOrganisationName: 'Organisation',
+  organizationHierarchyLevels: normalizeOrganizationHierarchyLevels(),
   darkMode: false,
   autoSaveEnabled: true,
   autoSyncEnabled: true,
@@ -307,9 +323,10 @@ function employeeSection(employee) { return String(employee?.section || '').trim
 function activityRelevantToEmployee(activity, employee) {
   if (!activity || !employee) return false;
   const relevance = activityRelevance(activity);
-  return (!relevance.departments.length || relevance.departments.includes(String(employee.department || '').trim()))
-    && (!relevance.sections.length || relevance.sections.includes(employeeSection(employee)))
-    && (!relevance.processes.length || relevance.processes.includes(String(employee.process || '').trim()));
+  const enabledLevels = enabledOrganizationHierarchyLevels();
+  return (!enabledLevels.includes('department') || !relevance.departments.length || relevance.departments.includes(String(employee.department || '').trim()))
+    && (!enabledLevels.includes('section') || !relevance.sections.length || relevance.sections.includes(employeeSection(employee)))
+    && (!enabledLevels.includes('process') || !relevance.processes.length || relevance.processes.includes(String(employee.process || '').trim()));
 }
 function scheduleScopeParts() {
   const match = /^(department|section)::([\s\S]+)$/.exec(scheduleSectionFilter);
@@ -320,6 +337,7 @@ function isScheduleScopeValue(value) { return /^(department|section)::/.test(Str
 function scheduleEmployeeMatchesScope(employee) {
   const scope = scheduleScopeParts();
   if (!scope.level) return true;
+  if (!enabledOrganizationHierarchyLevels().includes(scope.level)) return true;
   return scope.level === 'department'
     ? String(employee?.department || (employeeSection(employee) ? 'Independent sections' : '')).trim() === scope.value
     : employeeSection(employee) === scope.value;
@@ -522,6 +540,7 @@ function loadSettings() {
       appSettings.activityTypes = normalizeActivityTypes(parsed.activityTypes);
         appSettings.workwheelGridDisplayMode = ['cells', 'both', 'row', 'none'].includes(parsed.workwheelGridDisplayMode) ? parsed.workwheelGridDisplayMode : 'cells';
       appSettings.personnelOrganisationName = String(parsed.personnelOrganisationName || parsed.defaultPersonnelOrganisation || '').trim().slice(0, 120) || 'Organisation';
+        appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(parsed.organizationHierarchyLevels);
       appSettings.workCodes = normalizeWorkCodes(parsed.workCodes);
       appSettings.securityLabel = normalizeSecurityLabel(parsed.securityLabel);
       appSettings.shiftRotationEnabled = parsed.shiftRotationEnabled === true;
@@ -736,8 +755,92 @@ function applyAppName() {
   });
 }
 
-function openSettings() {
-  document.getElementById('set-app-name').value = appSettings.appName;
+let activeSettingsTab = 'general';
+function switchSettingsTab(tabKey) {
+  const tabs = [...document.querySelectorAll('#settings-modal [role="tab"]')].filter(tab => tab.hidden !== true && tab.style.display !== 'none');
+  const requested = document.getElementById(`settings-tab-${tabKey}`);
+  const target = requested && tabs.includes(requested) ? requested : tabs[0];
+  if (!target) return;
+  activeSettingsTab = target.id.replace('settings-tab-', '');
+  document.querySelectorAll('#settings-content > .settings-tab-pane').forEach(pane => { pane.hidden = true; });
+  tabs.forEach(tab => {
+    const selected = tab === target;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    tab.classList.toggle('active', selected);
+    const pane = document.getElementById(tab.getAttribute('aria-controls'));
+    if (pane) pane.hidden = !selected;
+  });
+  if (activeSettingsTab === 'organisation') renderOrganizationManagementStructure();
+  if (activeSettingsTab === 'privacy') { updateDefaultJsonStatus(); void loadAdministrationStatistics(); }
+}
+function focusSettingsTab(tab) {
+  if (!tab) return;
+  switchSettingsTab(tab.id.replace('settings-tab-', ''));
+  tab.focus();
+}
+document.querySelector('#settings-modal [role="tablist"]')?.addEventListener('keydown', event => {
+  const tabs = [...event.currentTarget.querySelectorAll('[role="tab"]')].filter(tab => !tab.hidden && tab.style.display !== 'none');
+  const index = tabs.indexOf(document.activeElement);
+  let nextIndex = index;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+  else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === 'Home') nextIndex = 0;
+  else if (event.key === 'End') nextIndex = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  focusSettingsTab(tabs[nextIndex]);
+});
+function setSettingsReadOnly(readOnly) {
+  const isReadOnlyUser = readOnly && hostedMode && hostedUser?.role !== 'admin';
+  document.querySelectorAll('#settings-content input, #settings-content select, #settings-content textarea, #settings-content button').forEach(control => {
+    if (control.matches('input, select, textarea')) {
+      control.disabled = isReadOnlyUser;
+      return;
+    }
+    if (control.closest('.settings-pane-heading') || control.id === 'set-about-version' || control.classList.contains('settings-tab')) return;
+    if (control.matches('button')) control.hidden = isReadOnlyUser;
+  });
+  const accessTab = document.getElementById('settings-tab-access');
+  const privacyTab = document.getElementById('settings-tab-privacy');
+  if (accessTab) accessTab.hidden = isReadOnlyUser;
+  if (privacyTab) privacyTab.hidden = isReadOnlyUser;
+  document.querySelectorAll('#settings-modal .settings-footer button:not(#settings-save-btn)').forEach(button => { button.disabled = false; });
+  const note = document.getElementById('settings-readonly-note');
+  if (note) note.hidden = !readOnly;
+  const saveButton = document.getElementById('settings-save-btn');
+  if (saveButton) saveButton.hidden = isReadOnlyUser;
+}
+function populateOrganizationSettings() {
+  const name = document.getElementById('organization-management-name');
+  if (name) name.value = appSettings.personnelOrganisationName || 'Organisation';
+  const levels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
+  ORGANIZATION_HIERARCHY_LEVELS.forEach(level => {
+    const checkbox = document.getElementById(`organization-level-${level}`);
+    if (!checkbox) return;
+    checkbox.checked = levels[level];
+    checkbox.onchange = () => {
+      const changedIndex = ORGANIZATION_HIERARCHY_LEVELS.indexOf(level);
+      if (!checkbox.checked) ORGANIZATION_HIERARCHY_LEVELS.slice(changedIndex + 1).forEach(dependentLevel => {
+        const dependent = document.getElementById(`organization-level-${dependentLevel}`);
+        if (dependent) dependent.checked = false;
+      });
+      let previousChecked = true;
+      ORGANIZATION_HIERARCHY_LEVELS.forEach(currentLevel => {
+        const currentInput = document.getElementById(`organization-level-${currentLevel}`);
+        if (!currentInput) return;
+        currentInput.disabled = !previousChecked;
+        if (!previousChecked) currentInput.checked = false;
+        previousChecked = currentInput.checked;
+      });
+    };
+    checkbox.disabled = hostedMode && hostedUser?.role !== 'admin';
+  });
+  renderOrganizationManagementStructure();
+}
+function populateSettingsPanes() {
+  const appName = document.getElementById('set-app-name');
+  if (appName) appName.value = appSettings.appName || '';
   const secLabel = normalizeSecurityLabel(appSettings.securityLabel || {});
   document.getElementById('set-security-label-enabled').checked = secLabel.enabled === true;
   document.getElementById('set-security-label-text').value = secLabel.text || '';
@@ -746,15 +849,62 @@ function openSettings() {
   document.getElementById('set-workwheel-upcoming-days').value = String(appSettings.workwheelUpcomingDays || 14);
   document.getElementById('set-workwheel-grid-display').value = ['cells', 'both', 'row', 'none'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
   document.getElementById('set-my-schedule-lookahead-days').value = String(appSettings.myScheduleLookaheadDays || 31);
+  document.getElementById('set-core-time').value = appSettings.coreWorkdayRange || '0730-1500';
+  document.getElementById('set-jump-to-today').checked = appSettings.jumpToTodayOnGridChange !== false;
+  document.getElementById('set-show-level-rank').checked = appSettings.showLevelRankInSchedule !== false;
+  document.getElementById('set-planning-horizon-days').value = String(appSettings.planningHorizonDays ?? 0);
+  document.getElementById('set-planning-horizon-color').value = normalizeHexColor(appSettings.planningHorizonColor, '#ef4444');
+  document.getElementById('set-core-time').oninput = updateCoreHoursDisplayFromRangeInput;
+  updateCoreHoursDisplayFromRangeInput();
+  populateOrganizationSettings();
+  document.getElementById('personnel-light-max').value = String(appSettings.lightMax);
+  document.getElementById('personnel-normal-max').value = String(appSettings.normalMax);
+  document.getElementById('personnel-high-max').value = String(appSettings.highMax);
+  const rotationEnabled = document.getElementById('set-shift-rotation-enabled');
+  if (rotationEnabled) rotationEnabled.checked = appSettings.shiftRotationEnabled === true;
+  const ranges = normalizeShiftRotationRanges(appSettings.shiftRotationRanges);
+  ['normal', 'day', 'evening', 'night'].forEach(key => { const input = document.getElementById(`set-rotation-${key}`); if (input) input.value = ranges[key]; });
+  const colors = normalizeShiftRotationColors(appSettings.shiftRotationColors);
+  ['normal', 'day', 'evening', 'night', 'turn', 'leave', 'overtime'].forEach(key => { const input = document.getElementById(`set-rotation-color-${key}`); if (input) input.value = colors[key]; });
+  renderShiftTeamSettings();
+  const bugReport = document.getElementById('set-bug-report-enabled');
+  if (bugReport) bugReport.checked = appSettings.bugReportEnabled === true;
+  const checksToggle = document.getElementById('set-operational-checks-enabled');
+  if (checksToggle) checksToggle.checked = operationalChecksEnabled;
+  const auditInfo = document.getElementById('admin-audit-info');
+  if (auditInfo) auditInfo.innerHTML = `Active file: <b>${esc(activeFileName || 'None')}</b><br>Source: <b>${esc(remoteUpdateSource)}</b><br>Status: <b>${hasUnsavedChanges ? 'Unsaved changes' : 'Saved'}</b><br>App version: <b>${esc(APP_VERSION)}</b><br>Data format: <b>v${DATA_VERSION}</b>`;
   renderHolidaySettings();
   updateDefaultJsonStatus();
   const about = document.getElementById('set-about-version');
-    if (about) about.textContent = `ATLAS v${APP_VERSION} · Adaptive Timeline, Load & Allocation System · Data format v${DATA_VERSION}`;
-    document.querySelectorAll('[data-copyright-year]').forEach(element => { element.textContent = String(new Date().getFullYear()); });
-  document.getElementById('settings-modal').classList.add('open');
+  if (about) about.textContent = `ATLAS v${APP_VERSION} · Adaptive Timeline, Load & Allocation System · Data format v${DATA_VERSION}`;
+  document.querySelectorAll('[data-copyright-year]').forEach(element => { element.textContent = String(new Date().getFullYear()); });
   const userInfo = document.getElementById('hosted-user-info');
   if (userInfo) userInfo.textContent = hostedUser ? `Signed in as ${hostedUser.name} · ${accountRoleLabel(hostedUser.role)}` : '';
-  document.querySelectorAll('.hosted-admin-only').forEach(element => { element.style.display = hostedMode ? '' : 'none'; });
+  document.querySelectorAll('.hosted-admin-only').forEach(element => {
+    const adminOnly = hostedMode && hostedUser?.role !== 'admin';
+    if (element.hasAttribute('hidden')) element.hidden = adminOnly;
+    else element.style.display = adminOnly ? 'none' : '';
+  });
+  document.querySelectorAll('.organization-admin-only').forEach(element => { element.hidden = false; });
+  const thresholds = ['personnel-light-max', 'personnel-normal-max', 'personnel-high-max'];
+  thresholds.forEach(id => { const field = document.getElementById(id); if (field) field.disabled = hostedMode && hostedUser?.role !== 'admin'; });
+  const structureButton = document.querySelector('#organization-management-structure')?.closest('.form-row')?.querySelector('button');
+  if (structureButton) structureButton.disabled = hostedMode && hostedUser?.role !== 'admin';
+  const roleTabs = ['access', 'privacy'].map(key => document.getElementById(`settings-tab-${key}`));
+  roleTabs.forEach(tab => { if (tab) tab.hidden = hostedMode && hostedUser?.role !== 'admin'; });
+  const activeTab = document.getElementById(`settings-tab-${activeSettingsTab}`);
+  if (activeTab?.hidden) switchSettingsTab('general');
+}
+function openSettings(tab = 'general') {
+  settingsReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  populateSettingsPanes();
+  captureSettingsInitialValues();
+  document.querySelectorAll('.hosted-admin-only').forEach(element => { element.hidden = hostedMode && hostedUser?.role !== 'admin'; });
+  document.querySelectorAll('.organization-admin-only').forEach(element => { element.hidden = false; });
+  setSettingsReadOnly(hostedMode && hostedUser?.role !== 'admin');
+  document.getElementById('settings-modal').classList.add('open');
+  switchSettingsTab(tab);
+  document.querySelector(`#settings-tab-${activeSettingsTab}`)?.focus();
 }
 function updateHostedAccountUi() {
   const signOut = document.getElementById('hosted-sign-out');
@@ -818,6 +968,9 @@ async function savePersonalSettings(event) {
   event.preventDefault();
   const error = document.getElementById('personal-settings-error');
   error.textContent = '';
+  const emailField = document.getElementById('personal-email');
+  if (!isValidEmailAddress(emailField.value)) { emailField.setCustomValidity('Enter an email in the format name@domain.tld.'); emailField.reportValidity(); emailField.addEventListener('input', () => emailField.setCustomValidity(''), { once: true }); return; }
+  emailField.setCustomValidity('');
   const password = document.getElementById('personal-password').value;
   const payload = {
     name: document.getElementById('personal-name').value,
@@ -851,6 +1004,8 @@ function openAccountManagement() {
     showToast('Administrator access is required.', 3500);
     return;
   }
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('access');
+  else switchSettingsTab('access');
   openSettingsChild('account-management-modal', 'settings-modal');
   resetAccountForm();
   document.getElementById('account-management-modal').classList.add('open');
@@ -963,6 +1118,9 @@ async function revokeHostedUserSessions(userId) {
 }
 async function saveHostedUser(event) {
   event.preventDefault();
+  const emailField = document.getElementById('account-email');
+  if (!isValidEmailAddress(emailField.value)) { emailField.setCustomValidity('Enter an email in the format name@domain.tld.'); emailField.reportValidity(); emailField.addEventListener('input', () => emailField.setCustomValidity(''), { once: true }); return; }
+  emailField.setCustomValidity('');
   const id = document.getElementById('account-id').value;
   const payload = { name: document.getElementById('account-name').value, username: document.getElementById('account-username').value, email: document.getElementById('account-email').value, role: document.getElementById('account-role').value };
   const password = document.getElementById('account-password').value;
@@ -997,14 +1155,8 @@ async function signOutHostedUser() {
   showHostedAuthScreen('login', 'You have been signed out.');
 }
 function openAdministrationSettings() {
-  openSettingsChild('administration-settings-modal', 'settings-modal');
-  const info = document.getElementById('admin-audit-info');
-  const checksToggle = document.getElementById('set-operational-checks-enabled');
-  if (checksToggle) checksToggle.checked = operationalChecksEnabled;
-  document.getElementById('set-bug-report-enabled').checked = appSettings.bugReportEnabled === true;
-  if (info) info.innerHTML = `Active file: <b>${esc(activeFileName || 'None')}</b><br>Source: <b>${esc(remoteUpdateSource)}</b><br>Status: <b>${hasUnsavedChanges ? 'Unsaved changes' : 'Saved'}</b><br>App version: <b>${esc(APP_VERSION)}</b><br>Data format: <b>v${DATA_VERSION}</b>`;
-  document.getElementById('administration-settings-modal').classList.add('open');
-  loadAdministrationStatistics();
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('privacy');
+  else switchSettingsTab('privacy');
 }
 function formatStatisticBytes(bytes) {
   const value = Number(bytes) || 0;
@@ -1032,28 +1184,58 @@ async function loadAdministrationStatistics() {
   if (!response.ok) { target.textContent = result.error || 'Statistics unavailable.'; return; }
   renderAdministrationStatistics(result);
 }
-async function factoryResetHostedApp() {
+function factoryResetHostedApp() {
   if (!hostedMode || hostedUser?.role !== 'admin') {
     showToast('Administrator access is required.', 3500);
     return;
   }
-  const confirmation = prompt('This permanently deletes all ATLAS data and accounts. Type RESET ATLAS to continue.');
-  if (confirmation !== 'RESET ATLAS') return;
-  if (!confirm('Final confirmation: permanently erase the entire ATLAS database and return to first-run setup?')) return;
-  const response = await fetch('/api/admin/factory-reset', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ confirmation }),
-  });
-  if (!response.ok) {
-    const result = await response.json().catch(() => ({}));
-    alert(result.error || 'Factory reset failed.');
+  const modal = document.getElementById('factory-reset-modal');
+  const input = document.getElementById('factory-reset-confirmation');
+  const error = document.getElementById('factory-reset-error');
+  if (!modal || !input) return;
+  input.value = '';
+  input.disabled = false;
+  if (error) error.textContent = '';
+  const submit = document.getElementById('factory-reset-submit');
+  if (submit) { submit.disabled = true; submit.textContent = 'Permanently reset ATLAS'; }
+  modal.classList.add('open');
+  input.focus();
+}
+async function submitFactoryResetHostedApp(event) {
+  event.preventDefault();
+  if (!hostedMode || hostedUser?.role !== 'admin') {
+    showToast('Administrator access is required.', 3500);
+    closeModal('factory-reset-modal');
     return;
   }
-  hostedUser = null;
-  document.getElementById('administration-settings-modal')?.classList.remove('open');
-  document.getElementById('settings-modal')?.classList.remove('open');
-  showHostedAuthScreen('setup', 'ATLAS was reset. Create the first administrator to begin again.');
+  const input = document.getElementById('factory-reset-confirmation');
+  const submit = document.getElementById('factory-reset-submit');
+  const error = document.getElementById('factory-reset-error');
+  if (input?.value !== 'RESET ATLAS' || !submit) return;
+  submit.disabled = true;
+  submit.textContent = 'Resetting…';
+  if (input) input.disabled = true;
+  if (error) error.textContent = '';
+  try {
+    const response = await fetch('/api/admin/factory-reset', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ confirmation: input.value }),
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.error || 'Factory reset failed.');
+    }
+    hostedUser = null;
+    document.getElementById('settings-modal')?.classList.remove('open');
+    closeModal('factory-reset-modal');
+    showHostedAuthScreen('setup', 'ATLAS was reset. Create the first administrator to begin again.');
+  } catch (resetError) {
+    if (error) error.textContent = resetError.message || 'Factory reset failed. Check the connection and try again.';
+    if (input) { input.disabled = false; input.focus(); }
+    submit.disabled = false;
+    submit.textContent = 'Permanently reset ATLAS';
+  }
 }
 async function saveAdministrationSettings() {
   if (hostedMode && hostedUser?.role === 'admin') {
@@ -1063,74 +1245,32 @@ async function saveAdministrationSettings() {
     operationalChecksEnabled = enabled;
     if (!enabled) showAdminCheckIndicators = false;
   }
-  await mutateState('saveAdministrationSettings', () => {
-    appSettings.bugReportEnabled = document.getElementById('set-bug-report-enabled').checked === true;
-    persistSettings();
-  });
-  if (!appSettings.bugReportEnabled && currentPage === 'bug-report') currentPage = 'grid';
-  closeModal('administration-settings-modal');
-  renderPage();
+  await saveSettings();
 }
 function openScheduleSettings() {
-  openSettingsChild('schedule-settings-modal', 'settings-modal');
-  document.getElementById('set-core-time').value = appSettings.coreWorkdayRange || '0730-1500';
-  document.getElementById('set-jump-to-today').checked = appSettings.jumpToTodayOnGridChange !== false;
-  document.getElementById('set-show-level-rank').checked = appSettings.showLevelRankInSchedule !== false;
-  document.getElementById('set-planning-horizon-days').value = String(appSettings.planningHorizonDays ?? 0);
-  document.getElementById('set-planning-horizon-color').value = normalizeHexColor(appSettings.planningHorizonColor, '#ef4444');
-  document.getElementById('set-core-time').oninput = updateCoreHoursDisplayFromRangeInput;
-  updateCoreHoursDisplayFromRangeInput();
-  document.getElementById('schedule-settings-modal').classList.add('open');
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('schedule');
+  else switchSettingsTab('schedule');
 }
 function openDataBackupSettings() {
-  openSettingsChild('data-backup-settings-modal', 'settings-modal');
-  updateDefaultJsonStatus();
-  document.getElementById('data-backup-settings-modal').classList.add('open');
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('privacy');
+  else switchSettingsTab('privacy');
 }
-function openOrganisationStructure() {
-  openSettingsChild('organisation-structure-modal', 'settings-modal');
-  renderOrganisationStructure();
-  document.getElementById('organisation-structure-modal').classList.add('open');
+function openOrganizationManagement() {
+  if (hostedMode && hostedUser?.role !== 'admin') { showToast('Only administrators can manage organization settings.', 3500); return; }
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('organisation');
+  else switchSettingsTab('organisation');
 }
-function openPersonnelSettings() {
-  openSettingsChild('personnel-settings-modal', 'settings-modal');
-  document.getElementById('personnel-light-max').value = String(appSettings.lightMax);
-  document.getElementById('personnel-normal-max').value = String(appSettings.normalMax);
-  document.getElementById('personnel-high-max').value = String(appSettings.highMax);
-  document.getElementById('personnel-settings-modal').classList.add('open');
+function renderOrganizationManagementStructure() { renderOrganisationStructure('organization-management-structure'); }
+async function saveOrganizationManagement() {
+  await saveSettings();
 }
-async function savePersonnelSettings() {
-  const lightMax = parseFloat(document.getElementById('personnel-light-max').value);
-  const normalMax = parseFloat(document.getElementById('personnel-normal-max').value);
-  const highMax = parseFloat(document.getElementById('personnel-high-max').value);
-  if (![lightMax, normalMax, highMax].every(Number.isFinite) || !(lightMax < normalMax && normalMax < highMax)) {
-    alert('Staffing-load thresholds must increase from Light to High.');
-    return;
-  }
-  await mutateState('savePersonnelSettings', () => {
-    appSettings.lightMax = lightMax;
-    appSettings.normalMax = normalMax;
-    appSettings.highMax = highMax;
-    persistSettings();
-  });
-  closeModal('personnel-settings-modal');
-  renderPage();
-}
-async function savePersonnelOrganisationName() {
-  const input = document.getElementById('personnel-organisation-name');
-  const personnelOrganisationName = String(input?.value || '').trim().slice(0, 120) || 'Organisation';
-  await mutateState('savePersonnelOrganisationName', () => {
-    appSettings.personnelOrganisationName = personnelOrganisationName;
-    employees.forEach(employee => { employee.organisation = personnelOrganisationName; });
-  }, { saveDisk: true });
-  renderEmployees();
-  showToast(`Organisation set to ${personnelOrganisationName}.`, 3500);
-}
-function renderOrganisationStructure() {
-  const list = document.getElementById('organisation-structure-list');
+function renderOrganisationStructure(targetId = 'organisation-structure-list') {
+  const list = document.getElementById(targetId);
   if (!list) return;
-  const nodeKey = (level, parent, value) => JSON.stringify({ level, parent, value });
+  const enabledLevels = enabledOrganizationHierarchyLevels();
+  const nodeKey = (level, parent, value) => JSON.stringify({ level, parent, value, targetId });
   const valuesFor = (level, parent) => {
+    if (!enabledLevels.includes(level)) return [];
     const members = employees.filter(employee => {
       const path = hierarchyParentPath(employee, level);
       return path.slice(0, -1).join('\u0000') === parent.join('\u0000');
@@ -1139,12 +1279,14 @@ function renderOrganisationStructure() {
   };
   const membersFor = (level, parent, value) => employees.filter(employee => hierarchyParentPath(employee, level).slice(0, -1).join('\u0000') === parent.join('\u0000') && hierarchyValue(employee, level) === value);
   const children = (level, parent) => {
-    const next = { department: 'section', section: 'process', process: 'team' }[level];
+    const levelIndex = enabledLevels.indexOf(level);
+    const next = enabledLevels[levelIndex + 1];
     return next ? valuesFor(next, [...parent]) : [];
   };
   const renderNode = (level, parent, value, depth) => {
     const members = membersFor(level, parent, value);
-    const next = { department: 'section', section: 'process', process: 'team' }[level];
+    const levelIndex = enabledLevels.indexOf(level);
+    const next = enabledLevels[levelIndex + 1];
     const key = nodeKey(level, parent, value);
     const color = level === 'department' ? (resolveDeptColor(value) || '#64748b') : level === 'section' ? (resolveSectionColor(parent[1], value) || '#64748b') : level === 'process' ? (resolveProcessColor(parent[1], parent[2], value) || '#64748b') : (resolveSubdepartmentColor(parent[1], value) || '#64748b');
     const childMarkup = next ? valuesFor(next, [...parent, value]).map(child => renderNode(next, [...parent, value], child, depth + 1)).join('') : '';
@@ -1159,8 +1301,9 @@ function renderOrganisationStructure() {
       </div>${childMarkup ? `<div class="org-tree-children">${childMarkup}</div>` : ''}
     </div>`;
   };
-  const organisations = [...new Set(employees.map(employee => employee.organisation || 'Unassigned organisation'))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
-  list.innerHTML = `<div class="org-tree-intro"><span class="org-tree-intro-icon">↕</span><div><strong>Drag the handle to reorder</strong><span>Only items with the same parent can be reordered. Use the arrow buttons for precise keyboard control.</span></div></div>${organisations.map(organisation => `<section class="org-tree-organisation"><header><span>${esc(organisation)}</span><span>${employees.filter(employee => (employee.organisation || 'Unassigned organisation') === organisation).length} people</span></header>${valuesFor('department', [organisation]).map(department => renderNode('department', [organisation], department, 0)).join('')}</section>`).join('') || '<div class="empty-note">No personnel hierarchy data yet.</div>'}`;
+  const organisations = employees.length ? [appSettings.personnelOrganisationName || 'Organisation'] : [];
+  const firstLevel = enabledLevels[0];
+  list.innerHTML = `<div class="org-tree-intro"><span class="org-tree-intro-icon">↕</span><div><strong>Drag the handle to reorder</strong><span>Only items with the same parent can be reordered. Use the arrow buttons for precise keyboard control.</span></div></div>${organisations.map(organisation => `<section class="org-tree-organisation"><header><span>${esc(organisation)}</span><span>${employees.length} ${employees.length === 1 ? 'person' : 'people'}</span></header>${firstLevel ? valuesFor(firstLevel, [organisation]).map(value => renderNode(firstLevel, [organisation], value, 0)).join('') : '<div class="empty-note">No personnel hierarchy levels are enabled.</div>'}</section>`).join('') || '<div class="empty-note">No personnel hierarchy data yet.</div>'}`;
 }
 let structureDrag = null;
 function startStructureDrag(event) {
@@ -1188,7 +1331,7 @@ async function dropStructure(event) {
   if (!structureDrag || !target || structureDrag.level !== target.level || JSON.stringify(structureDrag.parent) !== JSON.stringify(target.parent) || structureDrag.value === target.value) return endStructureDrag();
   await reorderStructureNodes(structureDrag, target, false);
   endStructureDrag();
-  renderOrganisationStructure();
+  renderOrganisationStructure(target.targetId);
 }
 async function reorderStructureNodes(source, target, after = false) {
   const values = [...new Set(employees.filter(employee => hierarchyParentPath(employee, source.level).slice(0, -1).join('\u0000') === source.parent.join('\u0000')).map(employee => hierarchyValue(employee, source.level)))].sort((a, b) => hierarchyOrderFor(source.level, source.parent, a) - hierarchyOrderFor(source.level, source.parent, b) || a.localeCompare(b, 'nb', { sensitivity: 'base' }));
@@ -1204,7 +1347,7 @@ async function moveStructureNode(nodeJson, direction) {
   const index = values.indexOf(source.value), targetValue = values[index + Number(direction)];
   if (!targetValue) return;
   await reorderStructureNodes(source, { ...source, value: targetValue }, direction > 0);
-  renderOrganisationStructure();
+  renderOrganisationStructure(source.targetId);
 }
 async function moveStandaloneSection(section, direction) {
   const organisation = employees.find(employee => !employee.department && employeeSection(employee) === section)?.organisation || 'Unassigned organisation';
@@ -1224,21 +1367,8 @@ async function moveStandaloneSection(section, direction) {
   renderEmployees();
 }
 function openShiftRotationSettings() {
-    openSettingsChild('shift-rotation-settings-modal', 'settings-modal');
-  const enabled = document.getElementById('set-shift-rotation-enabled');
-  if (enabled) enabled.checked = appSettings.shiftRotationEnabled === true;
-  const ranges = normalizeShiftRotationRanges(appSettings.shiftRotationRanges);
-  ['normal', 'day', 'evening', 'night'].forEach(key => {
-    const input = document.getElementById(`set-rotation-${key}`);
-    if (input) input.value = ranges[key];
-  });
-  const colors = normalizeShiftRotationColors(appSettings.shiftRotationColors);
-  ['normal', 'day', 'evening', 'night', 'turn', 'leave', 'overtime'].forEach(key => {
-    const input = document.getElementById(`set-rotation-color-${key}`);
-    if (input) input.value = colors[key];
-  });
-  document.getElementById('shift-rotation-settings-modal').classList.add('open');
-  renderShiftTeamSettings();
+  if (!document.getElementById('settings-modal')?.classList.contains('open')) openSettings('rotation');
+  else switchSettingsTab('rotation');
 }
 function renderShiftTeamSettings() {
   const list = document.getElementById('set-shift-team-list');
@@ -1262,28 +1392,7 @@ function removeShiftTeamSetting(id) {
   renderShiftTeamSettings();
 }
 async function saveShiftRotationSettings() {
-  const rotationRanges = {};
-  for (const key of ['normal', 'day', 'evening', 'night']) {
-    const value = normalizeShiftRotationRange(document.getElementById(`set-rotation-${key}`)?.value, '');
-    if (!value) { alert('Shift Rotation ranges must be valid, for example 0730-1500.'); return; }
-    rotationRanges[key] = value;
-  }
-  const shiftRotationColors = normalizeShiftRotationColors(Object.fromEntries(
-    ['normal', 'day', 'evening', 'night', 'turn', 'leave', 'overtime']
-      .map(key => [key, document.getElementById(`set-rotation-color-${key}`)?.value]),
-  ));
-  const shiftRotationEnabled = document.getElementById('set-shift-rotation-enabled')?.checked === true;
-  await mutateState('saveShiftRotationSettings', () => {
-    appSettings.shiftRotationEnabled = shiftRotationEnabled;
-    appSettings.shiftRotationRanges = rotationRanges;
-    appSettings.shiftRotationColors = shiftRotationColors;
-    appSettings.shiftTeams = normalizeShiftTeams(appSettings.shiftTeams);
-    persistSettings();
-  });
-  closeModal('shift-rotation-settings-modal');
-  updateSaveButton();
-  updateSbStatus();
-  renderPage();
+  await saveSettings();
 }
 async function hashAdminPassword(password) {
   if (globalThis.crypto?.subtle) {
@@ -1368,7 +1477,10 @@ async function removeHolidaySetting(index) {
   renderHolidaySettings();
 }
 function openSpecialDaysModal() {
-    if (!document.getElementById('special-days-modal')?.classList.contains('open')) openSettingsChild('special-days-modal', 'schedule-settings-modal');
+  if (!document.getElementById('special-days-modal')?.classList.contains('open')) {
+    if (document.getElementById('settings-modal')?.classList.contains('open')) openSettingsChild('special-days-modal', 'settings-modal');
+    else resetSettingsModalStack();
+  }
   appSettings.specialDays = normalizeSpecialDays(appSettings.specialDays);
   resetSpecialDayForm();
   toggleSpecialDayFields();
@@ -1779,7 +1891,48 @@ async function confirmHolidayImport() {
   renderPage();
 }
 async function saveSettings() {
+  if (hostedMode && hostedUser?.role !== 'admin') {
+    showToast('Only administrators can save planner settings.', 3500);
+    return;
+  }
   const name = document.getElementById('set-app-name').value.trim();
+  const organisationName = String(document.getElementById('organization-management-name')?.value || '').trim().slice(0, 120);
+  if (!organisationName) {
+    switchSettingsTab('organisation');
+    document.getElementById('organization-management-name')?.focus();
+    alert('Organisation name is required.');
+    return;
+  }
+  const lightMax = Number(document.getElementById('personnel-light-max')?.value);
+  const normalMax = Number(document.getElementById('personnel-normal-max')?.value);
+  const highMax = Number(document.getElementById('personnel-high-max')?.value);
+  if (![lightMax, normalMax, highMax].every(Number.isFinite) || !(lightMax < normalMax && normalMax < highMax)) {
+    switchSettingsTab('capacity');
+    document.getElementById('personnel-light-max')?.focus();
+    alert('Staffing-load thresholds must increase from Light to High.');
+    return;
+  }
+  const coreWorkdayRange = normalizeCoreWorkdayRange(document.getElementById('set-core-time')?.value, '');
+  if (!coreWorkdayRange) {
+    switchSettingsTab('schedule');
+    document.getElementById('set-core-time')?.focus();
+    alert('Enter a valid core workday range, for example 0730-1500.');
+    return;
+  }
+  const rotationRanges = {};
+  for (const key of ['normal', 'day', 'evening', 'night']) {
+    const value = normalizeShiftRotationRange(document.getElementById(`set-rotation-${key}`)?.value, '');
+    if (!value) {
+      switchSettingsTab('rotation');
+      document.getElementById(`set-rotation-${key}`)?.focus();
+      alert('Shift Rotation ranges must be valid, for example 0730-1500.');
+      return;
+    }
+    rotationRanges[key] = value;
+  }
+  const candidateLevels = {};
+  ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { candidateLevels[level] = document.getElementById(`organization-level-${level}`)?.checked === true; });
+  const organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(candidateLevels);
   const securityLabel = normalizeSecurityLabel({
     enabled: document.getElementById('set-security-label-enabled').checked,
     text: document.getElementById('set-security-label-text').value,
@@ -1790,19 +1943,58 @@ async function saveSettings() {
   const workwheelUpcomingDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-workwheel-upcoming-days')?.value) || 14)));
   const workwheelGridDisplayMode = ['cells', 'both', 'row', 'none'].includes(document.getElementById('set-workwheel-grid-display')?.value) ? document.getElementById('set-workwheel-grid-display').value : 'cells';
   const myScheduleLookaheadDays = Math.max(1, Math.min(365, Math.round(Number(document.getElementById('set-my-schedule-lookahead-days')?.value) || 31)));
+  const planningHorizonRaw = Number(document.getElementById('set-planning-horizon-days')?.value);
+  const planningHorizonDays = Math.max(0, Math.min(365, Math.round(Number.isFinite(planningHorizonRaw) ? planningHorizonRaw : 0)));
+  const planningHorizonColor = normalizeHexColor(document.getElementById('set-planning-horizon-color')?.value, '#ef4444');
+  const shiftRotationColors = normalizeShiftRotationColors(Object.fromEntries(['normal', 'day', 'evening', 'night', 'turn', 'leave', 'overtime'].map(key => [key, document.getElementById(`set-rotation-color-${key}`)?.value])));
+  const bugReportEnabled = document.getElementById('set-bug-report-enabled')?.checked === true;
+  const operationalChecksNext = document.getElementById('set-operational-checks-enabled')?.checked === true;
+
+  if (hostedMode && hostedUser?.role === 'admin' && operationalChecksNext !== operationalChecksEnabled) {
+    const response = await fetch('/api/admin/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operationalChecksEnabled: operationalChecksNext }) });
+    if (!response.ok) { const result = await response.json().catch(() => ({})); alert(result.error || 'Could not save operational-check settings.'); return; }
+  }
+  if (hostedMode && hostedUser?.role === 'admin' && operationalChecksNext !== operationalChecksEnabled) {
+    operationalChecksEnabled = operationalChecksNext;
+    if (!operationalChecksEnabled) showAdminCheckIndicators = false;
+  }
+
   await mutateState('saveSettings', () => {
     if (name) appSettings.appName = name;
+    appSettings.personnelOrganisationName = organisationName;
+    appSettings.organizationHierarchyLevels = organizationHierarchyLevels;
+    appSettings.lightMax = lightMax;
+    appSettings.normalMax = normalMax;
+    appSettings.highMax = highMax;
+    employees.forEach(employee => { employee.organisation = organisationName; });
+    appSettings.coreWorkdayRange = coreWorkdayRange;
+    appSettings.coreHoursPerDay = timeRangeHours(coreWorkdayRange) || 7.5;
+    appSettings.jumpToTodayOnGridChange = document.getElementById('set-jump-to-today')?.checked === true;
     appSettings.securityLabel = securityLabel;
     if (typeof showRank === 'boolean') appSettings.showLevelRankInSchedule = showRank;
+    appSettings.planningHorizonDays = planningHorizonDays;
+    appSettings.planningHorizonColor = planningHorizonColor;
     appSettings.workwheelEnabled = workwheelEnabled;
     appSettings.workwheelUpcomingDays = workwheelUpcomingDays;
     appSettings.workwheelGridDisplayMode = workwheelGridDisplayMode;
-      appSettings.myScheduleLookaheadDays = myScheduleLookaheadDays;
+    appSettings.myScheduleLookaheadDays = myScheduleLookaheadDays;
+    appSettings.shiftRotationEnabled = document.getElementById('set-shift-rotation-enabled')?.checked === true;
+    appSettings.shiftRotationRanges = rotationRanges;
+    appSettings.shiftRotationColors = shiftRotationColors;
+    appSettings.shiftTeams = normalizeShiftTeams(appSettings.shiftTeams);
+    appSettings.bugReportEnabled = bugReportEnabled;
     persistSettings();
-  });
+  }, { saveDisk: true });
+  if (!appSettings.bugReportEnabled && currentPage === 'bug-report') currentPage = 'grid';
   applyAppName();
+  updateShiftRotationNavigation();
+  updateWorkwheelNavigation();
+  updateBugReportNavigation();
   updateSaveButton();
   updateSbStatus();
+  captureSettingsInitialValues();
+  const saveStatus = document.getElementById('settings-save-status');
+  if (saveStatus) saveStatus.textContent = 'Changes saved to the active planner.';
   closeModal('settings-modal');
   renderPage();
 }
@@ -2896,7 +3088,6 @@ let collapsedPersonnelSections = new Set();
 let collapsedPersonnelDepartments = new Set();
 let openPersonnelColorGroups = new Set();
 let draggedPersonnelId = null;
-let hierarchyOrderExpanded = false;
 let hiddenEmployees = new Set();
 let hiddenEmployeesDraft = null;
 let inactiveEmployeeDisplayMode = 'greyed';
@@ -3411,18 +3602,52 @@ async function saveState(force = false) {
   }
 }
 
+function isValidEmailAddress(value) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim());
+}
+
 function showHostedAuthScreen(mode, message = '') {
   document.getElementById('atlas-auth-screen')?.remove();
   const screen = document.createElement('div');
   screen.id = 'atlas-auth-screen';
   const setupFields = mode === 'setup' ? '<section class="atlas-wizard-step" data-step="1"><div class="atlas-wizard-kicker">Step 1 of 5</div><h2>Create administrator</h2><p>Create the first account that will manage this ATLAS installation.</p><label>Name<input id="atlas-auth-name" autocomplete="name" required></label><label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Email<input id="atlas-auth-email" type="email" autocomplete="email" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="new-password" minlength="12" required><small>Use at least 12 characters.</small></label></section><section class="atlas-wizard-step" data-step="2" hidden><div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation structure</h2><p>Choose the depth that best matches how your organisation is arranged.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner and can be changed later.</small></label><div class="atlas-choice-grid"><label><input type="radio" name="atlas-organisation-type" value="process-subteams" checked><b>2 levels</b><span>Process → Team</span><small>Useful for a simple team structure.</small></label><label><input type="radio" name="atlas-organisation-type" value="section-process-team"><b>3 levels</b><span>Section → Process → Team</span><small>Adds a section above processes.</small></label><label><input type="radio" name="atlas-organisation-type" value="department-section-process-team"><b>4 levels</b><span>Department → Section → Process → Team</span><small>For larger departmental structures.</small></label><label><input type="radio" name="atlas-organisation-type" value="organisation-department-section-process-team"><b>5 levels</b><span>Organisation → Department → Section → Process → Team</span><small>Full organisation hierarchy.</small></label></div></section><section class="atlas-wizard-step" data-step="3" hidden><div class="atlas-wizard-kicker">Step 3 of 5</div><h2>Shift Rotation</h2><p>Plan recurring shifts and crew rotations separately from the activity schedule. After setup, mark personnel as <b>Include in Shift Rotation</b> and optionally assign Shift Teams.</p><label class="atlas-feature-card"><input id="atlas-auth-shift-rotation" type="checkbox"><span><b>Enable Shift Rotation</b><small>Show the rotation planner and related settings.</small></span></label></section><section class="atlas-wizard-step" data-step="4" hidden><div class="atlas-wizard-kicker">Step 4 of 5</div><h2>Activity Workwheel</h2><p>Use a visual wheel for recurring meetings, deadlines, and activities for people or organisational units.</p><label class="atlas-feature-card"><input id="atlas-auth-workwheel" type="checkbox"><span><b>Enable Activity Workwheel</b><small>Workwheels are saved on the server and shared with authorized users.</small></span></label></section><section class="atlas-wizard-step" data-step="5" hidden><div class="atlas-wizard-kicker">Step 5 of 5</div><h2>Schedule check system</h2><p>Let personnel leaders check that activities and schedule entries match an external billing or verification system.</p><label class="atlas-feature-card"><input id="atlas-auth-operational-checks" type="checkbox" checked><span><b>Enable schedule check system</b><small>Responsibility scopes can be assigned to administrators after setup.</small></span></label><label>Organisation timezone<select id="atlas-auth-timezone" required><option value="UTC">UTC</option><option value="Europe/Oslo">Europe/Oslo</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New_York</option><option value="America/Los_Angeles">America/Los_Angeles</option><option value="America/Chicago">America/Chicago</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Pacific/Auckland">Pacific/Auckland</option></select><small>Choose the IANA timezone used for organisation dates and schedule calculations.</small></section>' : '<label>Username<input id="atlas-auth-username" autocomplete="username" required></label><label>Password<input id="atlas-auth-password" type="password" autocomplete="current-password" required></label>';
   const passwordHint = mode === 'setup' ? '<small>Use at least 12 characters.</small>' : '';
-  screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>${mode === 'setup' ? 'Installation setup' : 'Sign in'}</h1><p class="atlas-auth-message">${message || (mode === 'setup' ? 'Configure this hosted planner in a few quick steps.' : 'Sign in to continue.')}</p><form id="atlas-auth-form">${setupFields}<div id="atlas-auth-error" role="alert"></div>${mode === 'setup' ? '<div class="atlas-wizard-actions"><button type="button" id="atlas-wizard-back">Back</button><button type="button" id="atlas-wizard-next" class="btn-primary">Next</button></div>' : '<button type="submit">Sign in</button>'}</form></div>`;
+  screen.innerHTML = `<div class="atlas-auth-card"><div class="atlas-auth-brand">ATLAS</div><h1>${mode === 'setup' ? 'Installation setup' : 'Sign in'}</h1>${mode === 'setup' ? '' : `<p class="atlas-auth-message">${esc(message || 'Sign in to continue.')}</p>`}<form id="atlas-auth-form">${setupFields}<div id="atlas-auth-error" role="alert"></div>${mode === 'setup' ? '<div class="atlas-wizard-actions"><button type="button" id="atlas-wizard-back">Back</button><button type="button" id="atlas-wizard-next" class="btn-primary">Next</button></div>' : '<button type="submit">Sign in</button>'}</form></div>`;
   document.body.appendChild(screen);
+  if (mode === 'setup') {
+    if (message) {
+      const firstStep = screen.querySelector('.atlas-wizard-step[data-step="1"]');
+      const notice = document.createElement('p');
+      notice.className = 'atlas-setup-notice';
+      notice.textContent = message;
+      firstStep?.querySelector('h2')?.after(notice);
+    }
+    const password = screen.querySelector('#atlas-auth-password');
+    const confirmationLabel = document.createElement('label');
+    confirmationLabel.htmlFor = 'atlas-auth-password-confirmation';
+    confirmationLabel.append('Confirm password');
+    const confirmation = document.createElement('input');
+    confirmation.id = 'atlas-auth-password-confirmation';
+    confirmation.type = 'password';
+    confirmation.autocomplete = 'new-password';
+    confirmation.required = true;
+    confirmationLabel.append(confirmation);
+    password?.closest('label')?.after(confirmationLabel);
+    const validatePasswordConfirmation = () => confirmation.setCustomValidity(confirmation.value && confirmation.value !== password?.value ? 'Passwords do not match.' : '');
+    confirmation.addEventListener('input', validatePasswordConfirmation);
+    password?.addEventListener('input', validatePasswordConfirmation);
+    const email = screen.querySelector('#atlas-auth-email');
+    email?.addEventListener('input', () => email.setCustomValidity(!email.value || isValidEmailAddress(email.value) ? '' : 'Enter an email in the format name@domain.tld.'));
+    const shiftDescription = screen.querySelector('.atlas-wizard-step[data-step="3"] > p');
+    if (shiftDescription) shiftDescription.textContent = 'Plan recurring shifts and crew rotations separately from the activity schedule. After setup, mark personnel as included in Shift Rotation and optionally assign Shift Teams. You can enable Shift Rotation later in Settings.';
+    const workwheelDescription = screen.querySelector('.atlas-wizard-step[data-step="4"] > p');
+    if (workwheelDescription) workwheelDescription.textContent = 'Use a visual wheel for recurring meetings, deadlines, and activities for people or organizational units. You can enable Workwheel later in Settings.';
+    const checksDescription = screen.querySelector('.atlas-wizard-step[data-step="5"] > p');
+    if (checksDescription) checksDescription.textContent = 'Let personnel leaders check that activities and schedule entries match an external billing or verification system.';
+  }
   const organizationStep = screen.querySelector('.atlas-wizard-step[data-step="2"]');
-  if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation</h2><p>Choose the installation mode and name. Organisation depth is configured through actual personnel records.</p><label>Team or organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This name will be shown throughout the planner.</small></label><label class="atlas-checkbox"><input id="atlas-auth-multisite" type="checkbox"><span><b>Enable multisite hosting</b><small>Allow a platform administrator to provision multiple isolated organisations.</small></span></label><label id="atlas-auth-organisation-slug-row" hidden>Organisation code or slug<input id="atlas-auth-organisation-slug" maxlength="64" pattern="[a-z0-9-]+" placeholder="operations-team"><small>Lowercase letters, numbers, and hyphens only.</small></label>';
+  if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organization</h2><p>Name your organization and choose its hierarchy. You can change these later in Settings → Manage Organization.</p><label>Organization name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This is the organization root, separate from the application name.</small></label><div class="organization-level-list"><label><input type="checkbox" id="atlas-auth-level-department" checked><span><b>Department</b><small>Top-level division</small></span></label><label><input type="checkbox" id="atlas-auth-level-section" checked><span><b>Section</b><small>Group within a department</small></span></label><label><input type="checkbox" id="atlas-auth-level-process" checked><span><b>Process</b><small>Functional area within a section</small></span></label><label><input type="checkbox" id="atlas-auth-level-team" checked><span><b>Team</b><small>Smallest planning group</small></span></label></div><div class="form-hint">Choose the levels that match your organization, in order. You can change these later in Settings.</div>';
   if (mode === 'login') screen.querySelector('#atlas-auth-form')?.insertAdjacentHTML('afterbegin', '');
-  screen.querySelector('#atlas-auth-multisite')?.addEventListener('change', event => { const row = screen.querySelector('#atlas-auth-organisation-slug-row'); if (row) row.hidden = !event.target.checked; });
   const form = screen.querySelector('#atlas-auth-form');
   const error = screen.querySelector('#atlas-auth-error');
   const wizardSteps = [...screen.querySelectorAll('.atlas-wizard-step')];
@@ -3430,16 +3655,49 @@ function showHostedAuthScreen(mode, message = '') {
   const showWizardStep = () => { wizardSteps.forEach((step, index) => { step.hidden = index !== wizardStep; }); const back = screen.querySelector('#atlas-wizard-back'); const next = screen.querySelector('#atlas-wizard-next'); if (back) back.disabled = wizardStep === 0; if (next) next.textContent = wizardStep === wizardSteps.length - 1 ? 'Create administrator' : 'Next'; };
   showWizardStep();
   screen.querySelector('#atlas-wizard-back')?.addEventListener('click', () => { if (wizardStep > 0) { wizardStep -= 1; showWizardStep(); } });
-  screen.querySelector('#atlas-wizard-next')?.addEventListener('click', () => { if (wizardStep < wizardSteps.length - 1) { wizardStep += 1; showWizardStep(); } else form.requestSubmit(); });
+  screen.querySelector('#atlas-wizard-next')?.addEventListener('click', () => {
+    const activeStep = wizardSteps[wizardStep];
+    const fieldsValid = [...activeStep.querySelectorAll('input, select, textarea')].every(field => field.checkValidity());
+    if (!fieldsValid) { activeStep.querySelector(':invalid')?.reportValidity(); return; }
+    if (wizardStep === 0 && form.querySelector('#atlas-auth-password').value !== form.querySelector('#atlas-auth-password-confirmation').value) {
+      const confirmation = form.querySelector('#atlas-auth-password-confirmation');
+      confirmation.setCustomValidity('Passwords do not match.');
+      confirmation.reportValidity();
+      return;
+    }
+    if (wizardStep < wizardSteps.length - 1) { wizardStep += 1; showWizardStep(); }
+    else form.requestSubmit();
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const button = form.querySelector('button');
+    const button = form.querySelector('#atlas-wizard-next') || form.querySelector('button[type="submit"]');
+    if (mode === 'setup') {
+      const invalidStepIndex = wizardSteps.findIndex(step => [...step.querySelectorAll('input, select, textarea')].some(field => !field.checkValidity()));
+      if (invalidStepIndex >= 0) {
+        wizardStep = invalidStepIndex;
+        showWizardStep();
+        wizardSteps[wizardStep].querySelector(':invalid')?.reportValidity();
+        return;
+      }
+      const confirmation = form.querySelector('#atlas-auth-password-confirmation');
+      if (form.querySelector('#atlas-auth-password').value !== confirmation.value) {
+        wizardStep = 0;
+        showWizardStep();
+        confirmation.setCustomValidity('Passwords do not match.');
+        confirmation.reportValidity();
+        return;
+      }
+    }
     button.disabled = true;
     error.textContent = '';
     try {
       const payload = { username: form.querySelector('#atlas-auth-username').value, password: form.querySelector('#atlas-auth-password').value };
-      if (mode === 'setup') { payload.organizationName = form.querySelector('#atlas-auth-organisation-name').value.trim(); payload.multisiteEnabled = form.querySelector('#atlas-auth-multisite').checked; }
-      if (mode === 'setup') Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, organizationSlug: form.querySelector('#atlas-auth-organisation-slug')?.value.trim() || 'default', multisiteEnabled: form.querySelector('#atlas-auth-multisite')?.checked === true, timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
+      if (mode === 'setup') payload.organizationName = form.querySelector('#atlas-auth-organisation-name').value.trim();
+      if (mode === 'setup') {
+        const levels = {};
+        ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { levels[level] = form.querySelector(`#atlas-auth-level-${level}`)?.checked === true; });
+        Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, organizationHierarchyLevels: normalizeOrganizationHierarchyLevels(levels), timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
+      }
       const endpoint = mode === 'setup' ? '/api/setup/create-admin' : '/api/auth/login';
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json().catch(() => ({}));
@@ -3452,14 +3710,19 @@ function showHostedAuthScreen(mode, message = '') {
       screen.remove();
       await loadHostedPlanner();
       if (mode === 'setup') {
-        appSettings.appName = form.querySelector('#atlas-auth-organisation-name').value.trim();
+        const personnelOrganisationName = form.querySelector('#atlas-auth-organisation-name').value.trim().slice(0, 120) || 'Organisation';
+        appSettings.personnelOrganisationName = personnelOrganisationName;
+        const levels = {};
+        ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { levels[level] = form.querySelector(`#atlas-auth-level-${level}`)?.checked === true; });
+        appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(levels);
+        employees.forEach(employee => { employee.organisation = personnelOrganisationName; });
         applyAppName();
         await saveState(true);
         renderPage();
       }
     } catch (err) {
       error.textContent = err.message || 'Authentication failed.';
-      button.disabled = false;
+      if (button) button.disabled = false;
     }
   });
 }
@@ -4000,7 +4263,7 @@ function resolveDeptColor(dept) {
   if (appSettings.departmentColors && appSettings.departmentColors[dept]) {
     return normalizeHexColor(appSettings.departmentColors[dept]);
   }
-  const departments = [...new Set(employees.map(employee => employee.department).filter(Boolean))]
+  const departments = [...new Set(employees.filter(() => enabledOrganizationHierarchyLevels().includes('department')).map(employee => employee.department).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
   const index = Math.max(0, departments.indexOf(dept));
   return PALETTE[index % PALETTE.length];
@@ -4011,22 +4274,21 @@ function processColorKey(dept, section, process) { return `${dept}\u0000${sectio
 function subdepartmentOrderKey(dept, subdept) { return `${dept}\u0000${subdept}`; }
 function hierarchyOrderKey(...parts) { return parts.map(value => String(value || '')).join('\u0000'); }
 function hierarchyValue(employee, level) {
-  if (level === 'department') return employee.department || (employeeSection(employee) ? 'Independent sections' : 'Unassigned department');
-  if (level === 'section') return employee.section || employee.subdepartment || 'Unassigned section';
-  if (level === 'process') return employee.process || 'Unassigned process';
-  return employee.team || 'Unassigned team';
+  const levels = enabledOrganizationHierarchyLevels();
+  const fieldByLevel = { department: 'department', section: 'section', process: 'process', team: 'team' };
+  const names = { department: 'Department', section: 'Section', process: 'Process', team: 'Team' };
+  const enabledLevel = levels.includes(level) ? level : levels[levels.indexOf(level) - 1];
+  if (!enabledLevel) return appSettings.personnelOrganisationName || 'Organisation';
+  const field = fieldByLevel[enabledLevel];
+  const rawValue = enabledLevel === 'section' ? employee.section || employee.subdepartment : employee[field];
+  return rawValue || `Unassigned ${names[enabledLevel].toLowerCase()}`;
 }
 function hierarchyParentPath(employee, level) {
   const organisation = employee.organisation || 'Unassigned organisation';
-  const hasDepartment = String(employee.department || '').trim() !== '';
-  const department = hierarchyValue(employee, 'department');
-  const section = hierarchyValue(employee, 'section');
-  const process = hierarchyValue(employee, 'process');
-  const sectionParentDepartment = !hasDepartment && employeeSection(employee) ? 'Independent sections' : department;
-  if (level === 'department') return [organisation, department];
-  if (level === 'section') return [organisation, sectionParentDepartment, section];
-  if (level === 'process') return [organisation, sectionParentDepartment, section, process];
-  return [organisation, sectionParentDepartment, section, process, hierarchyValue(employee, 'team')];
+  const levels = enabledOrganizationHierarchyLevels();
+  const index = levels.indexOf(level);
+  if (index < 0) return [organisation];
+  return [organisation, ...levels.slice(0, index + 1).map(enabledLevel => hierarchyValue(employee, enabledLevel))];
 }
 function hierarchyOrderFor(level, parentPath, value) {
   return Number(hierarchyOrder[level]?.[hierarchyOrderKey(...parentPath, value)]) || 9999;
@@ -4175,22 +4437,14 @@ function compareScheduleGroups(left, right) {
   const rightEmp = right.emps?.[0] || {};
   const organisationComparison = compareHierarchyAssignment(leftEmp.organisation, rightEmp.organisation) || String(leftEmp.organisation || '').localeCompare(String(rightEmp.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
-  const leftDepartment = hierarchyValue(leftEmp, 'department');
-  const rightDepartment = hierarchyValue(rightEmp, 'department');
-  const departmentComparison = compareAssignedHierarchyValues('department', [leftEmp.organisation || 'Unassigned organisation'], leftDepartment, rightDepartment);
-  if (departmentComparison) return departmentComparison;
-  const leftSection = hierarchyValue(leftEmp, 'section');
-  const rightSection = hierarchyValue(rightEmp, 'section');
-  const sectionComparison = compareAssignedHierarchyValues('section', [leftEmp.organisation || 'Unassigned organisation', leftDepartment], leftSection, rightSection);
-  if (sectionComparison) return sectionComparison;
-  const leftProcess = hierarchyValue(leftEmp, 'process');
-  const rightProcess = hierarchyValue(rightEmp, 'process');
-  const processComparison = compareAssignedHierarchyValues('process', [leftEmp.organisation || 'Unassigned organisation', leftDepartment, leftSection], leftProcess, rightProcess);
-  if (processComparison) return processComparison;
-  const leftTeam = hierarchyValue(leftEmp, 'team');
-  const rightTeam = hierarchyValue(rightEmp, 'team');
-  const teamComparison = compareAssignedHierarchyValues('team', [leftEmp.organisation || 'Unassigned organisation', leftDepartment, leftSection, leftProcess], leftTeam, rightTeam);
-  if (teamComparison) return teamComparison;
+  let parent = [leftEmp.organisation || 'Unassigned organisation'];
+  for (const level of enabledOrganizationHierarchyLevels()) {
+    const leftValue = hierarchyValue(leftEmp, level);
+    const rightValue = hierarchyValue(rightEmp, level);
+    const comparison = compareAssignedHierarchyValues(level, parent, leftValue, rightValue);
+    if (comparison) return comparison;
+    parent = [...parent, leftValue];
+  }
   const leftPersonnelOrder = Math.min(...(left.emps || []).map(employee => Number(employee.sortOrder) || 9999));
   const rightPersonnelOrder = Math.min(...(right.emps || []).map(employee => Number(employee.sortOrder) || 9999));
   return leftPersonnelOrder - rightPersonnelOrder || String(leftEmp.team || '').localeCompare(String(rightEmp.team || ''), 'nb', { sensitivity: 'base' });
@@ -4251,31 +4505,29 @@ function groupColorsFor(dept, subdept, deptColors) {
   return { bg: `${teamColor}22`, accent: teamColor };
 }
 function employeeGroupColor(employee, deptColors) {
-  const dept = employee.department || 'Unassigned';
-  const section = employee.section || employee.subdepartment || '';
-  const process = resolveProcessColor(dept, section, employee.process);
-  const sectionColor = resolveSubdepartmentColor(dept, section);
+  const levels = enabledOrganizationHierarchyLevels();
+  const dept = levels.includes('department') ? employee.department || 'Unassigned' : 'Unassigned';
+  const section = levels.includes('section') ? employee.section || employee.subdepartment || '' : '';
+  const process = levels.includes('process') ? resolveProcessColor(dept, section, employee.process) : null;
+  const sectionColor = levels.includes('section') ? resolveSubdepartmentColor(dept, section) : null;
   const color = process || sectionColor;
   return color ? { bg: `${color}22`, accent: color } : deptColors;
 }
 function sectionGroupColor(group, deptColors) {
+  if (!enabledOrganizationHierarchyLevels().includes('section')) return deptColors;
   const employee = group.emps?.[0];
   const section = employee?.section || employee?.subdepartment || '';
   const standaloneSections = [...new Set(employees.filter(item => !item.department && employeeSection(item)).map(employeeSection))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
   const standaloneFallback = PALETTE[Math.max(0, standaloneSections.indexOf(section)) % PALETTE.length];
   const department = employee?.department || '';
-  const sectionColor = resolveSectionColor(department, section) || (department ? resolveDeptColor(department) : standaloneFallback);
+  const sectionColor = enabledOrganizationHierarchyLevels().includes('section') ? resolveSectionColor(department, section) || (department ? resolveDeptColor(department) : standaloneFallback) : null;
   return sectionColor ? { bg: `${sectionColor}22`, accent: sectionColor } : deptColors;
 }
 function employeeHierarchyPath(employee, options = {}) {
-  const includeDepartment = options.includeDepartment !== false;
-  return [
-    employee?.organisation,
-    includeDepartment ? employee?.department : '',
-    employee?.section || employee?.subdepartment,
-    employee?.process,
-    employee?.team,
-  ].filter(Boolean).join(' / ');
+  return [employee?.organisation, ...enabledOrganizationHierarchyLevels().map(level => {
+    const field = level === 'section' ? employee?.section || employee?.subdepartment : employee?.[level];
+    return field;
+  })].filter(Boolean).join(' / ');
 }
 function employeeProcessPath(employee) {
   return [employee?.organisation, employee?.department, employee?.section || employee?.subdepartment, employee?.process].filter(Boolean).join('\u0000');
@@ -4298,23 +4550,19 @@ function displayEmployeeNameMarkup(employee) {
   return `<span title="${esc(fullName)}">${content}</span>`;
 }
 function employeeHierarchyLeaf(employee) {
-  return [employee?.section, employee?.process, employee?.team].filter(Boolean).join(' / ');
+  return enabledOrganizationHierarchyLevels().map(level => level === 'section' ? employee?.section || employee?.subdepartment : employee?.[level]).filter(Boolean).join(' / ');
 }
 function comparePersonnelHierarchy(left, right) {
   const organisationComparison = compareHierarchyAssignment(left?.organisation, right?.organisation) || String(left?.organisation || '').localeCompare(String(right?.organisation || ''), 'nb', { sensitivity: 'base' });
   if (organisationComparison) return organisationComparison;
-  const leftDepartment = hierarchyValue(left, 'department');
-  const rightDepartment = hierarchyValue(right, 'department');
-  const departmentComparison = compareAssignedHierarchyValues('department', [left?.organisation || 'Unassigned organisation'], leftDepartment, rightDepartment);
-  if (departmentComparison) return departmentComparison;
-  const leftSection = left?.section || left?.subdepartment || 'Unassigned section';
-  const rightSection = right?.section || right?.subdepartment || 'Unassigned section';
-  const sectionComparison = compareAssignedHierarchyValues('section', [left?.organisation || 'Unassigned organisation', leftDepartment], leftSection, rightSection);
-  if (sectionComparison) return sectionComparison;
-  const processComparison = compareAssignedHierarchyValues('process', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection], left?.process, right?.process);
-  if (processComparison) return processComparison;
-  const teamComparison = compareAssignedHierarchyValues('team', [left?.organisation || 'Unassigned organisation', leftDepartment, leftSection, left?.process || 'Unassigned process'], left?.team, right?.team);
-  if (teamComparison) return teamComparison;
+  let parent = [left?.organisation || 'Unassigned organisation'];
+  for (const level of enabledOrganizationHierarchyLevels()) {
+    const leftValue = hierarchyValue(left, level);
+    const rightValue = hierarchyValue(right, level);
+    const comparison = compareAssignedHierarchyValues(level, parent, leftValue, rightValue);
+    if (comparison) return comparison;
+    parent = [...parent, leftValue];
+  }
   return ((left?.sortOrder ?? 9999) - (right?.sortOrder ?? 9999)) ||
     String(left?.name || '').localeCompare(String(right?.name || ''), 'nb', { sensitivity: 'base' });
 }
@@ -4322,10 +4570,11 @@ function sortedEmployees() {
   return [...employees].filter(scheduleEmployeeMatchesScope).sort(comparePersonnelHierarchy);
 }
 function deptGroups(employeeList = employees, applyScheduleFilters = true) {
+  const enabledLevels = enabledOrganizationHierarchyLevels();
   const byDept = new Map();
   for (const emp of employeeList) {
     if (applyScheduleFilters && (hiddenEmployees.has(emp.id) || !scheduleEmployeeMatchesScope(emp) || (emp.inactive === true && inactiveEmployeeDisplayMode === 'hidden'))) continue;
-    const department = emp.department || (employeeSection(emp) ? 'Independent sections' : 'Unassigned');
+    const department = enabledLevels.includes('department') ? (emp.department || (enabledLevels.includes('section') && employeeSection(emp) ? 'Independent sections' : 'Unassigned')) : appSettings.personnelOrganisationName || 'Organisation';
     const subdepartment = employeeHierarchyLeaf(emp);
     const key = `${department}\u0000${subdepartment}`;
     if (!byDept.has(key)) byDept.set(key, { department, subdepartment, emps: [] });
@@ -4339,12 +4588,7 @@ function deptGroups(employeeList = employees, applyScheduleFilters = true) {
       const organisationComparison = compareHierarchyAssignment(leftEmployee.organisation, rightEmployee.organisation)
         || String(leftEmployee.organisation || '').localeCompare(String(rightEmployee.organisation || ''), 'nb', { sensitivity: 'base' });
       if (organisationComparison) return organisationComparison;
-      return compareAssignedHierarchyValues(
-        'department',
-        [leftEmployee.organisation || 'Unassigned organisation'],
-        left.department,
-        right.department,
-      ) || comparePersonnelGroupLeaves(left.department, left.subdepartment, right.subdepartment)
+      return comparePersonnelHierarchy(leftEmployee, rightEmployee)
         || (left.groupOrder - right.groupOrder);
     })
     .map(group => ({
@@ -4660,11 +4904,23 @@ function updateBugReportNavigation() {
     btn.classList.toggle('active', currentPage === 'bug-report');
   });
 }
+function updateSidebarGroupLabels() {
+  document.querySelectorAll('[data-nav-group-label]').forEach(label => {
+    let item = label.nextElementSibling;
+    let hasVisibleItem = false;
+    while (item && !item.matches('[data-nav-group-label]')) {
+      if (item.matches('.nav-btn') && getComputedStyle(item).display !== 'none') hasVisibleItem = true;
+      item = item.nextElementSibling;
+    }
+    label.hidden = !hasVisibleItem;
+  });
+}
 function renderPage() {
   renderSbToday();
   updateShiftRotationNavigation();
   updateWorkwheelNavigation();
   updateBugReportNavigation();
+  updateSidebarGroupLabels();
   const content = document.getElementById('content');
   if (currentPage === 'grid' || currentPage === 'shift-rotation') {
     content.style.cssText = 'padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%';
@@ -5073,7 +5329,10 @@ function gridSpanLabelWidth(startIndex, endIndex) {
 function renderGrid() {
   const range = scheduleRange();
   const activeScope = scheduleScopeParts();
-  if (activeScope.level && !(activeScope.level === 'department'
+  if (activeScope.level && !enabledOrganizationHierarchyLevels().includes(activeScope.level)) {
+    scheduleSectionFilter = '';
+    saveGridPreferences();
+  } else if (activeScope.level && !(activeScope.level === 'department'
     ? employees.some(employee => String(employee.department || '').trim() === activeScope.value)
     : employees.some(employee => employeeSection(employee) === activeScope.value))) {
     scheduleSectionFilter = '';
@@ -5086,8 +5345,8 @@ function renderGrid() {
       ? Math.min(96, Math.max(48, Math.floor((window.innerWidth - 300) / Math.max(1, days.length))))
       : 36;
   const today = todayStr();
-  const scheduleSections = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
-  const scheduleDepartments = [...new Set(employees.map(employee => String(employee.department || (employeeSection(employee) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  const scheduleSections = enabledOrganizationHierarchyLevels().includes('section') ? [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' })) : [];
+  const scheduleDepartments = enabledOrganizationHierarchyLevels().includes('department') ? [...new Set(employees.map(employee => String(employee.department || (employeeSection(employee) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' })) : [];
 
   let monthCells = '', weekCells = '', dayCells = '';
   let mLabel = '', mCount = 0, mIndex = 0;
@@ -6439,11 +6698,7 @@ async function pickStatusById(id) {
   if (st) await pickStatus(st.key);
 }
 async function pickStatus(key) {
-  const savedStatus = getEntryObj(`${pickerEmpId}_${pickerDate}`)?.status;
-  if (savedStatus === key) {
-    await removeSelectedStatus();
-    return;
-  }
+  const existingEntry = getEntryObj(`${pickerEmpId}_${pickerDate}`);
   if (pickerSelectedStatus === key) {
     pickerSelectedStatus = null;
     document.querySelectorAll('#pk-status-btns .pk-btn').forEach(button => button.classList.remove('pk-sel'));
@@ -6451,6 +6706,10 @@ async function pickStatus(key) {
     return;
   }
   pickerSelectedStatus = key;
+  pickerStatusLifecycle = existingEntry?.status === key ? (existingEntry.lifecycle || 'confirmed') : 'confirmed';
+  if (existingEntry?.status === key) {
+    document.getElementById('pk-time').value = existingEntry.durationType === 'time' ? (existingEntry.time || '') : '';
+  }
   document.querySelectorAll('#pk-status-btns .pk-btn').forEach(b => b.classList.remove('pk-sel'));
   const idx = statuses.findIndex(s => s.key === key);
   const btn = document.querySelectorAll('#pk-status-btns .pk-btn')[idx];
@@ -6469,10 +6728,19 @@ function updatePickerStatusLifecycle() {
   if (hint) hint.textContent = pickerStatusLifecycle === 'planned'
     ? 'Planned statuses are informational only and do not affect workload or availability.'
     : 'Confirmed statuses affect workload and availability.';
+  const saveState = document.getElementById('pk-save-status-state');
+  const existing = pickerEmpId != null ? getEntryObj(`${pickerEmpId}_${pickerDate}`) : null;
+  if (saveState) saveState.style.display = pickerSelectedStatus && existing?.status === pickerSelectedStatus && (existing.lifecycle || 'confirmed') !== pickerStatusLifecycle ? 'inline-flex' : 'none';
 }
 function setPickerStatusLifecycle(lifecycle) {
   pickerStatusLifecycle = lifecycle === 'planned' ? 'planned' : 'confirmed';
   updatePickerStatusLifecycle();
+}
+async function savePickerStatusLifecycle() {
+  if (pickerEmpId == null || !pickerDate || !pickerSelectedStatus) return;
+  const existing = getEntryObj(`${pickerEmpId}_${pickerDate}`);
+  if (!existing || existing.status !== pickerSelectedStatus) return;
+  await saveWithDuration(existing.durationType === 'time' ? 'time' : existing.durationType === '24hours' ? '24hours' : 'fullday');
 }
 async function removeSelectedStatus() {
   if (pickerEmpId == null || !pickerDate) return;
@@ -6503,7 +6771,9 @@ async function saveWithDuration(durationType) {
   const dates = pickerDates.length ? pickerDates : [pickerDate];
   const selectedStatusDefinition = siFor(pickerSelectedStatus);
   if (selectedStatusDefinition?.isAbsence && pickerStatusLifecycle === 'planned' && hostedMode && hostedUser?.role === 'viewer') { showToast('Read-only users cannot plan or request absence.', 3500); return; }
-  if (selectedStatusDefinition?.isAbsence && selectedStatusDefinition.requiresApproval === true && pickerStatusLifecycle === 'planned') {
+  const existingSelectedEntry = dates.length === 1 ? getEntryObj(`${pickerEmpId}_${dates[0]}`) : null;
+  const editingExistingEntry = existingSelectedEntry?.status === pickerSelectedStatus;
+  if (!editingExistingEntry && selectedStatusDefinition?.isAbsence && selectedStatusDefinition.requiresApproval === true && pickerStatusLifecycle === 'planned') {
     const employee = empById(pickerEmpId);
     const response = await fetch('/api/me/absence-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ statusKey: pickerSelectedStatus, startDate: dates.slice().sort()[0], endDate: dates.slice().sort().at(-1), durationType, timeRange: time }) });
     const result = await response.json().catch(() => ({}));
@@ -6659,7 +6929,10 @@ document.addEventListener('click', e => {
 
 // ═══ STATUS MANAGER ══════════════════════════════════════════════════════════
 function openStatusManager() {
-  if (!document.getElementById('status-modal')?.classList.contains('open')) openSettingsChild('status-modal', 'settings-modal');
+  if (!document.getElementById('status-modal')?.classList.contains('open')) {
+    if (document.getElementById('settings-modal')?.classList.contains('open')) openSettingsChild('status-modal', 'settings-modal');
+    else resetSettingsModalStack();
+  }
   resetStatusForm();
   resetDailyStatusForm();
   resetWorkCodeForm();
@@ -6959,9 +7232,9 @@ function openActModal(id) {
   const currentScope = !act ? scheduleScopeParts() : null;
   if (currentScope?.level === 'department') relevance.departments = [currentScope.value];
   if (currentScope?.level === 'section') relevance.sections = [currentScope.value];
-  const departmentOptions = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort();
-  const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort();
-  const processOptions = [...new Set(employees.map(employee => String(employee.process || '').trim()).filter(Boolean))].sort();
+  const departmentOptions = enabledOrganizationHierarchyLevels().includes('department') ? [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort() : [];
+  const sectionOptions = enabledOrganizationHierarchyLevels().includes('section') ? [...new Set(employees.map(employeeSection).filter(Boolean))].sort() : [];
+  const processOptions = enabledOrganizationHierarchyLevels().includes('process') ? [...new Set(employees.map(employee => String(employee.process || '').trim()).filter(Boolean))].sort() : [];
   const departmentSelect = document.getElementById('af-relevance-departments');
   const sectionSelect = document.getElementById('af-relevance-sections');
   const processSelect = document.getElementById('af-relevance-processes');
@@ -7685,11 +7958,11 @@ function openCourseModal(courseId = null) {
   document.getElementById('course-name').value = course?.name || '';
   document.getElementById('course-code').value = course?.code || '';
   const scopeSelect = document.getElementById('course-scope');
-  const departments = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
+  const departments = enabledOrganizationHierarchyLevels().includes('department') ? [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb')) : [];
   const departmentOptions = departments.map(department => `<option value="${esc(`department:${encodeURIComponent(department)}`)}">${esc(department)} — entire department</option>`).join('');
-  const sectionOptions = [...new Map(employees.map(employee => [JSON.stringify([String(employee.department || '').trim(), employeeSection(employee)]), { department: String(employee.department || '').trim(), section: employeeSection(employee) }]).filter(([, value]) => value.section)).values()]
+  const sectionOptions = enabledOrganizationHierarchyLevels().includes('section') ? [...new Map(employees.map(employee => [JSON.stringify([String(employee.department || '').trim(), employeeSection(employee)]), { department: String(employee.department || '').trim(), section: employeeSection(employee) }]).filter(([, value]) => value.section)).values()]
     .sort((a, b) => a.department.localeCompare(b.department, 'nb') || a.section.localeCompare(b.section, 'nb'))
-    .map(scope => `<option value="${esc(`section:${encodeURIComponent(scope.department)}:${encodeURIComponent(scope.section)}`)}">${esc(scope.department ? `${scope.department} — ${scope.section}` : scope.section)}</option>`).join('');
+    .map(scope => `<option value="${esc(`section:${encodeURIComponent(scope.department)}:${encodeURIComponent(scope.section)}`)}">${esc(scope.department ? `${scope.department} — ${scope.section}` : scope.section)}</option>`).join('') : '';
   scopeSelect.innerHTML = `<option value="all">All departments and sections</option>${departmentOptions}${sectionOptions}`;
   if (course?.department && course?.section) scopeSelect.value = `section:${encodeURIComponent(course.department)}:${encodeURIComponent(course.section)}`;
   else if (course?.department) scopeSelect.value = `department:${encodeURIComponent(course.department)}`;
@@ -8204,20 +8477,23 @@ function openBulkPersonnelEdit() {
     if (hint) hint.textContent = currentValues.length === 1 ? `Current: ${currentValues[0] || '(blank)'}` : `Mixed values: ${currentValues.filter(Boolean).join(', ') || '(blank)'}. Leave unchanged by keeping this field blank, or check Clear to remove it for everyone.`;
   };
   document.getElementById('bulk-personnel-count').textContent = `${selected.length} employee${selected.length === 1 ? '' : 's'} selected`;
-  setField('bulk-department', values('department'));
-  setField('bulk-section', selected.map(employee => String(employee.section || employee.subdepartment || '').trim()));
-  setField('bulk-process', values('process'));
-  setField('bulk-team', values('team'));
+  const enabledLevels = enabledOrganizationHierarchyLevels();
+  if (enabledLevels.includes('department')) setField('bulk-department', values('department'));
+  if (enabledLevels.includes('section')) setField('bulk-section', selected.map(employee => String(employee.section || employee.subdepartment || '').trim()));
+  if (enabledLevels.includes('process')) setField('bulk-process', values('process'));
+  if (enabledLevels.includes('team')) setField('bulk-team', values('team'));
+  applyEmployeeHierarchyFieldVisibility(modal);
   modal.classList.add('open');
 }
 async function applyBulkPersonnelEdit() {
   const selected = employees.filter(employee => selectedPersonnelIds.has(employee.id));
   if (!selected.length) return;
+  const enabledLevels = enabledOrganizationHierarchyLevels();
   const changes = {
-    department: document.getElementById('bulk-department-clear')?.checked ? '' : (document.getElementById('bulk-department')?.value.trim() || null),
-    section: document.getElementById('bulk-section-clear')?.checked ? '' : (document.getElementById('bulk-section')?.value.trim() || null),
-    process: document.getElementById('bulk-process-clear')?.checked ? '' : (document.getElementById('bulk-process')?.value.trim() || null),
-    team: document.getElementById('bulk-team-clear')?.checked ? '' : (document.getElementById('bulk-team')?.value.trim() || null),
+    department: enabledLevels.includes('department') ? (document.getElementById('bulk-department-clear')?.checked ? '' : (document.getElementById('bulk-department')?.value.trim() || null)) : null,
+    section: enabledLevels.includes('section') ? (document.getElementById('bulk-section-clear')?.checked ? '' : (document.getElementById('bulk-section')?.value.trim() || null)) : null,
+    process: enabledLevels.includes('process') ? (document.getElementById('bulk-process-clear')?.checked ? '' : (document.getElementById('bulk-process')?.value.trim() || null)) : null,
+    team: enabledLevels.includes('team') ? (document.getElementById('bulk-team-clear')?.checked ? '' : (document.getElementById('bulk-team')?.value.trim() || null)) : null,
   };
   if (!Object.values(changes).some(value => value !== null)) {
     alert('Enter a new value or choose Clear for at least one field.');
@@ -8269,30 +8545,34 @@ async function dropPersonnel(event, targetId) {
   renderEmployees();
 }
 function renderEmployees() {
+  const enabledLevels = enabledOrganizationHierarchyLevels();
   const searchLower = empSearch.toLowerCase();
   const filtered = employees.filter(emp => {
+    const hierarchySearchText = enabledLevels.map(level => level === 'section' ? emp.section || emp.subdepartment : emp[level]).join(' ').toLowerCase();
     const matchesSearch = !searchLower ||
       emp.name.toLowerCase().includes(searchLower) || (emp.email || '').toLowerCase().includes(searchLower) ||
-      (emp.organisation || '').toLowerCase().includes(searchLower) || (emp.department || '').toLowerCase().includes(searchLower) || (emp.section || '').toLowerCase().includes(searchLower) || (emp.process || '').toLowerCase().includes(searchLower) || (emp.team || '').toLowerCase().includes(searchLower) || (emp.subdepartment || '').toLowerCase().includes(searchLower) || (emp.role || '').toLowerCase().includes(searchLower) ||
+      (emp.organisation || '').toLowerCase().includes(searchLower) || hierarchySearchText.includes(searchLower) || (emp.role || '').toLowerCase().includes(searchLower) ||
       (emp.level || '').toLowerCase().includes(searchLower) || (emp.birthday || '').toLowerCase().includes(searchLower) ||
       (emp.homeAddress || '').toLowerCase().includes(searchLower);
-    const matchesDept = !empFilterDept || emp.department === empFilterDept;
+    const matchesDept = !enabledLevels.includes('department') || !empFilterDept || emp.department === empFilterDept;
     const matchesCat = empFilterCatId === null || (emp.categoryIds || []).includes(empFilterCatId);
     return matchesSearch && matchesDept && matchesCat;
   });
   const byDept = new Map();
   for (const emp of filtered) { 
-    const deptName = emp.department || '';
-    const subdeptName = employeeHierarchyLeaf(emp);
     const organisationName = emp.organisation || 'Unassigned organisation';
-    const groupKey = `${emp.inactive === true ? '1' : '0'}\u0000${organisationName}\u0000${deptName}\u0000${subdeptName}`;
+    const hierarchyValues = enabledLevels.map(level => String(level === 'section' ? emp.section || emp.subdepartment || '' : emp[level] || ''));
+    const groupKey = JSON.stringify([emp.inactive === true ? '1' : '0', organisationName, ...hierarchyValues]);
     if (!byDept.has(groupKey)) byDept.set(groupKey, []);
     byDept.get(groupKey).push(emp);
   }
   const groups = [...byDept.entries()].map(([groupKey, list]) => {
-    const [inactiveKey, organisation, department, subdepartment] = groupKey.split('\u0000');
+    const [inactiveKey, organisation, ...hierarchyValues] = JSON.parse(groupKey);
     const sorted = [...list].sort((a, b) => ((a.sortOrder ?? 9999) - (b.sortOrder ?? 9999)) || a.name.localeCompare(b.name));
-    return { inactive: inactiveKey === '1', organisation, department, subdepartment, list: sorted, minOrder: sorted[0]?.sortOrder ?? 99, processOrder: Math.min(...list.map(employee => Number(employee.processOrder) || Number(employee.sortOrder) || 9999)) };
+    const hierarchy = Object.fromEntries(enabledLevels.map((level, index) => [level, hierarchyValues[index] || '']));
+    const group = { inactive: inactiveKey === '1', organisation, department: hierarchy.department || '', section: hierarchy.section || '', process: hierarchy.process || '', team: hierarchy.team || '', subdepartment: hierarchy.section || hierarchy.team || '', list: sorted, minOrder: sorted[0]?.sortOrder ?? 99, processOrder: Math.min(...list.map(employee => Number(employee.processOrder) || Number(employee.sortOrder) || 9999)) };
+    for (const [index, level] of enabledLevels.entries()) group[`level${index}`] = hierarchy[level] || '';
+    return group;
   });
   groups.sort((a, b) => {
     if (a.inactive !== b.inactive) return a.inactive ? 1 : -1;
@@ -8300,34 +8580,7 @@ function renderEmployees() {
     const right = b.list[0] || { organisation: b.organisation, department: b.department, section: b.subdepartment };
     return comparePersonnelHierarchy(left, right) || (Number(a.processOrder) - Number(b.processOrder));
   });
-  const allDepts = orderedDepartments().filter(department => department !== 'Unassigned' && department !== 'Independent sections');
-  const departmentOrderControls = allDepts.map((dept, index) => {
-    const color = resolveDeptColor(dept) || PALETTE[index % PALETTE.length];
-    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface)">
-      <span class="muted" style="width:22px;text-align:right;font-variant-numeric:tabular-nums">${index + 1}</span>
-      <span class="chip-dot" style="background:${color};display:inline-block;width:8px;height:8px;border-radius:50%"></span>
-      <span style="flex:1;font-size:12px;font-weight:600">${esc(dept)}</span>
-      <button type="button" class="icon-btn" title="Move ${esc(dept)} up" aria-label="Move ${esc(dept)} up" ${index === 0 ? 'disabled' : ''} onclick="moveDepartment(${esc(JSON.stringify(dept))},-1)">${svgIcon('chevronUp')}</button>
-      <button type="button" class="icon-btn" title="Move ${esc(dept)} down" aria-label="Move ${esc(dept)} down" ${index === allDepts.length - 1 ? 'disabled' : ''} onclick="moveDepartment(${esc(JSON.stringify(dept))},1)">${svgIcon('chevronDown')}</button>
-    </div>`;
-  }).join('');
-  const subdepartmentOrderControls = allDepts.map(dept => {
-    const teams = orderedSubdepartmentsFor(dept);
-    if (!teams.length) return '';
-    const color = resolveDeptColor(dept) || PALETTE[allDepts.indexOf(dept) % PALETTE.length];
-    return `<div style="border:1px solid var(--border);border-radius:10px;background:var(--surface);overflow:hidden">
-      <div style="padding:7px 9px;background:${color}18;border-bottom:1px solid ${color};font-size:12px;font-weight:700">${esc(dept)}</div>
-      <div>${teams.map((team, index) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;${index ? 'border-top:1px solid var(--border);' : ''}">
-        <span class="muted" style="width:22px;text-align:right;font-variant-numeric:tabular-nums">${index + 1}</span>
-        <span style="flex:1;font-size:12px">${esc(team)}</span>
-        <button type="button" class="icon-btn" title="Move ${esc(team)} up" aria-label="Move ${esc(team)} up" ${index === 0 ? 'disabled' : ''} onclick="moveSubdepartment(${esc(JSON.stringify(dept))},${esc(JSON.stringify(team))},-1)">${svgIcon('chevronUp')}</button>
-        <button type="button" class="icon-btn" title="Move ${esc(team)} down" aria-label="Move ${esc(team)} down" ${index === teams.length - 1 ? 'disabled' : ''} onclick="moveSubdepartment(${esc(JSON.stringify(dept))},${esc(JSON.stringify(team))},1)">${svgIcon('chevronDown')}</button>
-      </div>`).join('')}</div>
-    </div>`;
-  }).filter(Boolean).join('');
-  const standaloneSectionOrderControls = [...new Set(employees.filter(employee => !employee.department && employeeSection(employee)).map(employeeSection))]
-    .sort((left, right) => compareAssignedHierarchyValues('section', [employees.find(employee => !employee.department && employeeSection(employee) === left)?.organisation || 'Unassigned organisation', 'Independent sections'], left, right))
-    .map((section, index, sections) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;background:var(--surface)"><span style="flex:1;font-size:12px">${esc(section)}</span><button type="button" class="icon-btn" title="Move ${esc(section)} up" ${index === 0 ? 'disabled' : ''} onclick="moveStandaloneSection(${esc(JSON.stringify(section))},-1)">${svgIcon('chevronUp')}</button><button type="button" class="icon-btn" title="Move ${esc(section)} down" ${index === sections.length - 1 ? 'disabled' : ''} onclick="moveStandaloneSection(${esc(JSON.stringify(section))},1)">${svgIcon('chevronDown')}</button></div>`).join('');
+  const allDepts = enabledLevels.includes('department') ? orderedDepartments().filter(department => department !== 'Unassigned' && department !== 'Independent sections') : [];
   const personnelSelectionIds = new Set(filtered.map(employee => employee.id));
   const visibleSelectedCount = [...selectedPersonnelIds].filter(id => personnelSelectionIds.has(id)).length;
   const visibleAllSelected = filtered.length > 0 && visibleSelectedCount === filtered.length;
@@ -8393,24 +8646,29 @@ function renderEmployees() {
         rowsHtml += `<tr class="dept-row organisation-row"><td colspan="10" style="background:var(--primary);color:var(--primary-fg);font-size:13px;font-weight:800;letter-spacing:.03em;padding:8px 12px">${esc(group.organisation)} <span style="font-weight:500;opacity:.8;text-transform:none">· ${organisationPeople} ${organisationPeople === 1 ? 'person' : 'people'}</span></td></tr>`;
       }
       const deptColor = resolveDeptColor(group.department) || 'var(--border)';
-      if (group.department && group.department !== renderedDepartment) {
-        renderedDepartment = group.department;
-        const departmentCollapsed = collapsedPersonnelDepartments.has(personnelDepartmentKey(group.organisation, group.department));
-        const departmentPeople = filtered.filter(emp => (emp.organisation || 'Unassigned organisation') === group.organisation && (emp.department || 'Unassigned') === group.department).length;
-        rowsHtml += `<tr class="dept-row"><td colspan="10" style="background:${deptColor}22;border-bottom:2px solid ${deptColor};color:var(--text);font-weight:700"><button class="icon-btn" type="button" onclick="togglePersonnelDepartment(${esc(JSON.stringify(group.organisation))},${esc(JSON.stringify(group.department))})">${svgIcon(departmentCollapsed ? 'chevronRight' : 'chevronDown')}</button>${esc(group.department)} <span style="font-weight:400;text-transform:none">· ${departmentPeople} ${departmentPeople === 1 ? 'person' : 'people'}</span></td></tr>`;
+      const headings = enabledLevels.map((level, index) => ({ level, value: group[`level${index}`] })).filter(item => item.value);
+      let collapsed = false;
+      for (const { level, value } of headings) {
+        if (level === 'department') {
+          if (value !== renderedDepartment) {
+            renderedDepartment = value;
+            const departmentCollapsed = collapsedPersonnelDepartments.has(personnelDepartmentKey(group.organisation, value));
+            const departmentPeople = filtered.filter(emp => (emp.organisation || 'Unassigned organisation') === group.organisation && emp.department === value).length;
+            rowsHtml += `<tr class="dept-row"><td colspan="10" style="background:${deptColor}22;border-bottom:2px solid ${deptColor};color:var(--text);font-weight:700"><button class="icon-btn" type="button" onclick="togglePersonnelDepartment(${esc(JSON.stringify(group.organisation))},${esc(JSON.stringify(value))})">${svgIcon(departmentCollapsed ? 'chevronRight' : 'chevronDown')}</button>${esc(value)} <span style="font-weight:400;text-transform:none">· ${departmentPeople} ${departmentPeople === 1 ? 'person' : 'people'}</span></td></tr>`;
+          }
+          collapsed = collapsedPersonnelDepartments.has(personnelDepartmentKey(group.organisation, value));
+        } else {
+          const sectionName = group.section || '';
+          const sectionColor = resolveSectionColor(group.department, sectionName) || deptColor;
+          const sectionKey = personnelSectionKey(group.organisation, group.department, `${level}:${value}`);
+          const sectionCollapsed = collapsedPersonnelSections.has(sectionKey);
+          rowsHtml += `<tr class="dept-row"><td colspan="10" style="background:color-mix(in srgb,${sectionColor} 16%,var(--surface));border-bottom:1px solid ${sectionColor};border-left:4px solid ${sectionColor};color:var(--text);padding-left:${20 + enabledLevels.indexOf(level) * 12}px"><button class="icon-btn" type="button" aria-label="${sectionCollapsed ? 'Expand' : 'Collapse'} ${esc(value)}" onclick="togglePersonnelSection(${esc(JSON.stringify(group.organisation))},${esc(JSON.stringify(group.department))},${esc(JSON.stringify(`${level}:${value}`))})">${svgIcon(sectionCollapsed ? 'chevronRight' : 'chevronDown')}</button>${esc(value)} <span style="font-weight:400;text-transform:none">· ${group.list.length} ${group.list.length === 1 ? 'person' : 'people'}</span></td></tr>`;
+          collapsed = collapsed || sectionCollapsed;
+        }
       }
-      if (group.department && collapsedPersonnelDepartments.has(personnelDepartmentKey(group.organisation, group.department))) continue;
-      const sectionName = group.list[0]?.section || group.subdepartment || '';
-      const processName = group.list[0]?.process || '';
-      const departmentGroupCount = groups.filter(candidate => candidate.organisation === group.organisation && candidate.department === group.department).length;
-      const sectionHeading = [sectionName, processName].filter(Boolean).join(' / ') || (departmentGroupCount > 1 ? 'Unassigned section / process / team' : '');
+      if (collapsed) continue;
+      const sectionName = group.section || '';
       const sectionColor = resolveSectionColor(group.department, sectionName) || deptColor;
-      const sectionKey = personnelSectionKey(group.organisation, group.department, sectionName);
-      const sectionCollapsed = collapsedPersonnelSections.has(sectionKey);
-      if (sectionHeading) {
-        rowsHtml += `<tr class="dept-row"><td colspan="10" style="background:color-mix(in srgb,${sectionColor} 16%,var(--surface));border-bottom:1px solid ${sectionColor};border-left:4px solid ${sectionColor};color:var(--text);padding-left:20px"><button class="icon-btn" type="button" aria-label="${sectionCollapsed ? 'Expand' : 'Collapse'} ${esc(sectionHeading)}" onclick="togglePersonnelSection(${esc(JSON.stringify(group.organisation))},${esc(JSON.stringify(group.department))},${esc(JSON.stringify(sectionName))})">${svgIcon(sectionCollapsed ? 'chevronRight' : 'chevronDown')}</button>${esc(sectionHeading)} <span style="font-weight:400;text-transform:none">· ${group.list.length} ${group.list.length === 1 ? 'person' : 'people'}</span></td></tr>`;
-        if (sectionCollapsed) continue;
-      }
       for (const emp of group.list) {
         const cats = (emp.categoryIds || []).map(catById).filter(Boolean);
         const personnelColor = resolveProcessColor(emp.department || 'Unassigned', emp.section || emp.subdepartment || '', emp.process || '')
@@ -8448,13 +8706,6 @@ function renderEmployees() {
         <button class="btn btn-primary" onclick="openEmpModal()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> Add Employee</button>
       </div>
     </div>
-    <div class="card mb-4" style="padding:14px 16px">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:220px"><label for="personnel-organisation-name" style="display:block;margin-bottom:5px;font-size:12px;font-weight:700">Organisation name</label><input class="personnel-organisation-input" id="personnel-organisation-name" maxlength="120" value="${esc(appSettings.personnelOrganisationName || 'Organisation')}" placeholder="Organisation"></div>
-        <button class="btn btn-primary btn-sm" type="button" onclick="savePersonnelOrganisationName()">Save organisation</button>
-      </div>
-      <div class="form-hint" style="margin-top:7px">One organisation for this planner. Saving updates all personnel; departments and lower hierarchy remain unchanged.</div>
-    </div>
     <div class="flex items-center gap-2 mb-4" style="flex-wrap:wrap">
       <div class="search-box">
         <span class="search-ico"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg></span>
@@ -8470,31 +8721,6 @@ function renderEmployees() {
       ${categories.map(c => `<button class="filter-chip${empFilterCatId === c.id ? ' active' : ''}" onclick="empFilterCatId=${c.id};renderEmployees()"><span class="chip-dot" style="background:${c.color};display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px"></span>${esc(c.name)}</button>`).join('')}
     </div>` : ''}
     <div class="card mb-4" style="padding:12px">
-      <button class="btn btn-sm" type="button" onclick="hierarchyOrderExpanded=!hierarchyOrderExpanded;renderEmployees()" style="display:flex;align-items:center;gap:6px">
-        ${svgIcon(hierarchyOrderExpanded ? 'chevronDown' : 'chevronRight')} Hierarchy order
-      </button>
-      ${hierarchyOrderExpanded ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:12px">
-        <div>
-          <div style="font-size:13px;font-weight:700">Department order</div>
-          <div class="form-hint">Controls the department hierarchy in Schedule.</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,220px));justify-content:start;gap:8px;margin-top:10px">
-            ${departmentOrderControls || '<span class="muted text-sm">Add at least two departments to manage their order.</span>'}
-          </div>
-          <div style="font-size:13px;font-weight:700;margin-top:14px">Independent section order</div>
-          <div class="form-hint">Sections without a department are grouped separately and ordered here.</div>
-          <div style="display:grid;gap:8px;margin-top:10px">
-            ${standaloneSectionOrderControls || '<span class="muted text-sm">No independent sections.</span>'}
-          </div>
-        </div>
-        <div>
-          <div style="font-size:13px;font-weight:700">Sub-team order</div>
-          <div class="form-hint">Controls the sub-team hierarchy in Schedule. Employees without a sub-team remain first.</div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,220px));justify-content:start;gap:8px;margin-top:10px">
-            ${subdepartmentOrderControls || '<span class="muted text-sm">Add at least one sub-team to manage its order.</span>'}
-          </div>
-        </div>
-      </div>` : ''}
-    </div>
     <div class="card mb-4" style="padding:12px">
       <button class="btn btn-sm" type="button" onclick="deptColorsExpanded=!deptColorsExpanded;renderEmployees()" style="display:flex;align-items:center;gap:6px">
          ${svgIcon(deptColorsExpanded ? 'chevronDown' : 'chevronRight')} Department header colors
@@ -8543,6 +8769,7 @@ function openEmpModal(id) {
   document.getElementById('ef-section').value = emp?.section || emp?.subdepartment || '';
   document.getElementById('ef-process').value = emp?.process || '';
   document.getElementById('ef-team').value = emp?.team || '';
+  applyEmployeeHierarchyFieldVisibility();
   updateEmployeeHierarchySuggestions();
   ['ef-dept', 'ef-section', 'ef-process'].forEach(fieldId => {
     const field = document.getElementById(fieldId);
@@ -8574,10 +8801,17 @@ function updateEmployeeHierarchySuggestions() {
   const department = document.getElementById('ef-dept')?.value.trim() || '';
   const section = document.getElementById('ef-section')?.value.trim() || '';
   const process = document.getElementById('ef-process')?.value.trim() || '';
-  setDataListOptions('ef-departments', employees.map(emp => emp.department));
-  setDataListOptions('ef-sections', employees.filter(emp => !department || emp.department === department).map(emp => emp.section || emp.subdepartment));
-  setDataListOptions('ef-processes', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section)).map(emp => emp.process));
-  setDataListOptions('ef-teams', employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section) && (!process || emp.process === process)).map(emp => emp.team));
+  const enabledLevels = enabledOrganizationHierarchyLevels();
+  setDataListOptions('ef-departments', enabledLevels.includes('department') ? employees.map(emp => emp.department) : []);
+  setDataListOptions('ef-sections', enabledLevels.includes('section') ? employees.filter(emp => !department || emp.department === department).map(emp => emp.section || emp.subdepartment) : []);
+  setDataListOptions('ef-processes', enabledLevels.includes('process') ? employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section)).map(emp => emp.process) : []);
+  setDataListOptions('ef-teams', enabledLevels.includes('team') ? employees.filter(emp => (!department || emp.department === department) && (!section || (emp.section || emp.subdepartment) === section) && (!process || emp.process === process)).map(emp => emp.team) : []);
+}
+function applyEmployeeHierarchyFieldVisibility(root = document) {
+  const levels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
+  root.querySelectorAll('[data-hierarchy-level]').forEach(field => {
+    field.style.display = levels[field.dataset.hierarchyLevel] ? '' : 'none';
+  });
 }
 async function saveEmployee(addAnother = false) {
   const name = document.getElementById('ef-name').value.trim();
@@ -8599,6 +8833,7 @@ async function saveEmployee(addAnother = false) {
   const inactiveReason = inactive ? document.getElementById('ef-inactive-reason').value.trim().slice(0, 240) : '';
   const shiftTeamId = document.getElementById('ef-shift-team').value;
   if (!name || !email || !role) { alert('Name, email, and role are required.'); return; }
+  if (!isValidEmailAddress(email)) { const emailField = document.getElementById('ef-email'); emailField.setCustomValidity('Enter an email in the format name@domain.tld.'); emailField.reportValidity(); emailField.addEventListener('input', () => emailField.setCustomValidity(''), { once: true }); return; }
   if (Array.from(name).length > 30) { alert('Employee name can be at most 30 characters.'); return; }
   let sortOrder;
   if (sortRaw !== '') {
@@ -8612,6 +8847,13 @@ async function saveEmployee(addAnother = false) {
 
   const rec = { name, email, role, organisation, department: dept, section, process, team, subdepartment: section, level, birthday, homeAddress, phoneWork, phonePrivate, sortOrder, categoryIds: [...selectedEmpCatIds], includeInShiftRotation, shiftTeamId, inactive, inactiveReason: inactive ? inactiveReason : '' };
   const existingEmployee = editingEmpId ? empById(editingEmpId) : null;
+  if (existingEmployee) {
+    const enabledLevels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
+    if (!enabledLevels.department) rec.department = existingEmployee.department || '';
+    if (!enabledLevels.section) { rec.section = existingEmployee.section || existingEmployee.subdepartment || ''; rec.subdepartment = existingEmployee.subdepartment || rec.section; }
+    if (!enabledLevels.process) rec.process = existingEmployee.process || '';
+    if (!enabledLevels.team) rec.team = existingEmployee.team || '';
+  }
   const rotationDates = existingEmployee?.includeInShiftRotation && !includeInShiftRotation
     ? rotationDatesForEmployee(editingEmpId) : [];
   if (rotationDates.length) {
@@ -9155,8 +9397,8 @@ function renderDashboard() {
     ? String(emp.department || (employeeSection(emp) ? 'Independent sections' : '')).trim() === dashboardScope[2]
     : employeeSection(emp) === dashboardScope[2]));
   const dashboardEmployeeIds = new Set(dashboardEmployees.map(emp => emp.id));
-  const departmentOptions = [...new Set(employees.map(emp => String(emp.department || (employeeSection(emp) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
-  const sectionOptions = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb'));
+  const departmentOptions = enabledOrganizationHierarchyLevels().includes('department') ? [...new Set(employees.map(emp => String(emp.department || (employeeSection(emp) ? 'Independent sections' : '')).trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb')) : [];
+  const sectionOptions = enabledOrganizationHierarchyLevels().includes('section') ? [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'nb')) : [];
   const cardStatuses = statuses.filter(s => s.key !== 'at_work').slice(0, 3);
   const counts = {};
   statuses.forEach(s => { counts[s.key] = 0; });
@@ -9448,7 +9690,7 @@ function renderDashboard() {
               `<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:#22c55e;margin-right:4px"></span>Available: <b>${t.available} ${t.available === 1 ? 'person' : 'persons'}</b></div>`
             ];
             unavailableStatuses.forEach(s => {
-              const count = s.isAbsence ? t.absenceStatusCount : (s.isOutOfOffice ? t.outOfOfficeStatusCount : 0);
+              const count = t.counts[s.key] || 0;
               if (!count) return;
               tipLines.push(`<div><span class="dot" style="width:7px;height:7px;border-radius:50%;display:inline-block;background:${s.color};margin-right:4px"></span>${esc(s.label)}: <b>${count}</b></div>`);
             });
@@ -9893,13 +10135,10 @@ function summaryEmployeeGroups() {
     return children.get(key);
   };
   employees.forEach(employee => {
-    const department = employee.department || (employeeSection(employee) ? 'Independent sections' : 'Unassigned department');
+    const enabledLevels = enabledOrganizationHierarchyLevels();
     const path = [
       [employee.organisation || 'Unassigned organisation', 'organisation'],
-      [department, 'department'],
-      [employee.section || employee.subdepartment || 'Unassigned section', 'section'],
-      [employee.process || 'Unassigned process', 'process'],
-      [employee.team || 'Unassigned team', 'team'],
+      ...enabledLevels.map(level => [hierarchyValue(employee, level), level]),
     ];
     let children = root;
     let node = null;
@@ -10197,6 +10436,8 @@ function returnToActivityDraft(typeKey = null) {
   document.getElementById('act-modal').classList.add('open');
 }
 let settingsModalStack = [];
+let settingsReturnFocus = null;
+let settingsDirty = false;
 function openSettingsChild(childId, parentId = null) {
   const parent = parentId || settingsModalStack.at(-1) || null;
   if (parent && document.getElementById(parent)?.classList.contains('open')) settingsModalStack.push(parent);
@@ -10214,29 +10455,82 @@ function resetSettingsModalStack() {
   settingsModalStack = [];
   document.querySelectorAll('.modal-bg.settings-flow-open').forEach(modal => modal.classList.remove('open', 'settings-flow-open'));
 }
+function settingsHasChanges() {
+  return [...document.querySelectorAll('#settings-content input:not([type="file"]), #settings-content select, #settings-content textarea')]
+    .some(control => control.type === 'checkbox' ? control.checked !== (control.dataset.initialValue === 'true') : control.value !== (control.dataset.initialValue ?? control.value));
+}
+function captureSettingsInitialValues() {
+  document.querySelectorAll('#settings-content input:not([type="file"]), #settings-content select, #settings-content textarea').forEach(control => {
+    control.dataset.initialValue = control.type === 'checkbox' ? String(control.checked) : control.value;
+  });
+  settingsDirty = false;
+}
+function requestCloseSettings() {
+  closeModal('settings-modal');
+}
+function trapSettingsFocus(event) {
+  const modal = document.getElementById('settings-modal');
+  if (!modal?.classList.contains('open') || event.key !== 'Tab') return;
+  const focusable = [...modal.querySelectorAll('button:not([hidden]):not(:disabled), input:not([hidden]):not(:disabled), select:not([hidden]):not(:disabled), textarea:not([hidden]):not(:disabled), [tabindex="0"]')]
+    .filter(element => element.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+}
 function updateSettingsBackButtons() {
   document.querySelectorAll('[data-settings-back]').forEach(button => { button.style.display = settingsModalStack.length ? '' : 'none'; });
 }
 function closeModal(id) {
   const modal = document.getElementById(id);
+  const wasOpen = modal?.classList.contains('open');
+  if (id === 'settings-modal' && wasOpen && hostedMode && hostedUser?.role === 'admin' && settingsHasChanges()) {
+    if (!confirm('Discard unsaved settings changes?')) return;
+  }
   modal?.classList.remove('open');
   if (id === 'status-modal' && quickActivityTypeReturn) returnToActivityDraft();
-  if (id === 'settings-modal' || modal?.classList.contains('settings-flow-open')) resetSettingsModalStack();
+  if (id === 'settings-modal') {
+    resetSettingsModalStack();
+    settingsDirty = false;
+    if (wasOpen && settingsReturnFocus?.isConnected) settingsReturnFocus.focus();
+    settingsReturnFocus = null;
+  } else if (modal?.classList.contains('settings-flow-open')) {
+    modal.classList.remove('settings-flow-open');
+    const parentId = settingsModalStack.pop();
+    if (parentId) document.getElementById(parentId)?.classList.add('open');
+    updateSettingsBackButtons();
+  }
 }
 document.getElementById('account-form')?.addEventListener('submit', saveHostedUser);
 document.getElementById('personal-settings-form')?.addEventListener('submit', savePersonalSettings);
+document.getElementById('factory-reset-confirmation')?.addEventListener('input', event => {
+  const submit = document.getElementById('factory-reset-submit');
+  if (submit) submit.disabled = event.currentTarget.value !== 'RESET ATLAS';
+});
 document.querySelectorAll('.modal-bg').forEach(bg => {
   bg.addEventListener('mousedown', e => {
     if (e.target === bg) closeModal(bg.id);
   });
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    closePicker();
-    document.querySelectorAll('.modal-bg.open').forEach(m => {
-      closeModal(m.id);
-    });
-  }
+  trapSettingsFocus(e);
+  if (e.key !== 'Escape') return;
+  closePicker();
+  const topModal = [...document.querySelectorAll('.modal-bg.open')].at(-1);
+  if (!topModal) return;
+  if (topModal.id === 'settings-modal') requestCloseSettings();
+  else closeModal(topModal.id);
+});
+document.getElementById('settings-content')?.addEventListener('input', () => {
+  settingsDirty = true;
+  const status = document.getElementById('settings-save-status');
+  if (status) status.textContent = 'Unsaved changes';
+});
+document.getElementById('settings-content')?.addEventListener('change', () => {
+  settingsDirty = true;
+  const status = document.getElementById('settings-save-status');
+  if (status) status.textContent = 'Unsaved changes';
 });
 
 // ═══ BOOT ════════════════════════════════════════════════════════════════════

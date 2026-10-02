@@ -40,7 +40,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
   app.get('/api/healthz', async () => ({ status: 'ok' as const }));
 
   app.get('/api/auth/bootstrap-status', async () => ({ setupRequired: options.database.isSetupRequired() }));
-  app.post<{ Body: { name?: string; username?: string; email?: string; password?: string; organizationName?: string; organizationSlug?: string; multisiteEnabled?: boolean; organizationType?: 'process-subteams' | 'section-process-team' | 'department-section-process-team' | 'organisation-department-section-process-team'; timezone?: string; shiftRotationEnabled?: boolean; workwheelEnabled?: boolean; operationalChecksEnabled?: boolean } }>('/api/setup/create-admin', async (request, reply) => {
+  app.post<{ Body: { name?: string; username?: string; email?: string; password?: string; organizationName?: string; organizationSlug?: string; organizationHierarchyLevels?: { department?: boolean; section?: boolean; process?: boolean; team?: boolean }; multisiteEnabled?: boolean; organizationType?: 'process-subteams' | 'section-process-team' | 'department-section-process-team' | 'organisation-department-section-process-team'; timezone?: string; shiftRotationEnabled?: boolean; workwheelEnabled?: boolean; operationalChecksEnabled?: boolean } }>('/api/setup/create-admin', async (request, reply) => {
     const name = request.body?.name?.trim();
     const username = request.body?.username?.trim();
     const email = request.body?.email?.trim().toLowerCase();
@@ -435,7 +435,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     const changes = request.body ?? {};
     if (changes.name !== undefined && !changes.name.trim()) return reply.code(400).send({ error: 'Name cannot be empty' });
     if (changes.username !== undefined && !changes.username.trim()) return reply.code(400).send({ error: 'Username cannot be empty' });
-    if (changes.email !== undefined && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(changes.email.trim())) return reply.code(400).send({ error: 'A valid email is required' });
+    if (changes.email !== undefined && (!changes.email.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(changes.email.trim()))) return reply.code(400).send({ error: 'A valid email is required' });
     if (changes.password !== undefined && changes.password.length < 12) return reply.code(400).send({ error: 'Password must be at least 12 characters' });
     try {
       const user = options.database.updateUser(request.params.userId, changes);
@@ -489,6 +489,14 @@ export function buildApp(options: AppOptions): FastifyInstance {
     try {
       const previousDocument = options.database.getPlanner().document;
       const document = { ...normalizeLegacyPlannerDocument(request.body.document), lastChangedByUserId: actor.userId };
+      const currentSettings = (previousDocument as { appSettings?: Record<string, unknown> }).appSettings ?? {};
+      const nextSettings = (document as { appSettings?: Record<string, unknown> }).appSettings ?? {};
+      const configuredSettings = (settings: Record<string, unknown>) => ({
+        personnelOrganisationName: String(settings.personnelOrganisationName || settings.defaultPersonnelOrganisation || 'Organisation').trim() || 'Organisation',
+        organizationHierarchyLevels: normalizeOrganizationHierarchyLevels(settings.organizationHierarchyLevels),
+      });
+      const organizationSettingsChanged = JSON.stringify(configuredSettings(currentSettings)) !== JSON.stringify(configuredSettings(nextSettings));
+      if (actor.role !== 'admin' && organizationSettingsChanged) return reply.code(403).send({ error: 'Only administrators can change organization settings' });
       if (actor.role === 'planner' && !plannerUpdateIsOperationalOnly(options.database.getPlanner().document, document)) {
         return reply.code(403).send({ error: 'Users may only change cells and activities' });
       }
@@ -681,7 +689,7 @@ function randomUnitId(path: string): string {
 }
 
 const plannerOperationalFields = new Set([
-  'savedAt', 'entriesMap', 'activities', 'activityShiftsMap', 'cellNotesMap',
+  'savedAt', 'lastChangedByUserId', 'entriesMap', 'activities', 'activityShiftsMap', 'cellNotesMap',
   'overtimeMap', 'workScheduleChecksMap', 'shiftRotationMap',
 ]);
 
@@ -692,6 +700,20 @@ function plannerUpdateIsOperationalOnly(current: Record<string, unknown>, next: 
     if (JSON.stringify(current[key]) !== JSON.stringify(next[key])) return false;
   }
   return true;
+}
+
+function normalizeOrganizationHierarchyLevels(value: unknown): { department: boolean; section: boolean; process: boolean; team: boolean } {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const levels = {
+    department: source.department !== false,
+    section: source.section !== false,
+    process: source.process !== false,
+    team: source.team !== false,
+  };
+  if (!levels.department) return { department: false, section: false, process: false, team: false };
+  if (!levels.section) { levels.process = false; levels.team = false; }
+  if (!levels.process) levels.team = false;
+  return levels;
 }
 
 function diffPlannerChanges(previous: import('@atlas/core').PlannerDocument, next: import('@atlas/core').PlannerDocument, revision: number, actorUserId: string, actorName: string): Array<Omit<import('./db.js').PlannerChangeEventRecord, 'id'>> {
