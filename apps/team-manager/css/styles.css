@@ -305,9 +305,12 @@ body.dark .sb-link.unsaved-action:hover { background: #4a3815; color: #fcd34d; }
 body.dark .gh-day.holiday-col { background: #451a1a !important; color: #fca5a5; }
 .gday.status-cell.holiday-col { border-right: 1px solid color-mix(in srgb, var(--holiday-color, #ef4444) 16%, var(--border)) !important; border-bottom: 1px solid color-mix(in srgb, var(--holiday-color, #ef4444) 16%, var(--border)); }
 .gday.has-activity.holiday-col { border-bottom: 3px solid var(--activity-color, transparent) !important; }
-.gday.holiday-col.weekend { background:linear-gradient(color-mix(in srgb,var(--text) 9%,transparent),color-mix(in srgb,var(--text) 9%,transparent)),color-mix(in srgb,var(--holiday-color,#ef4444) 28%,var(--surface)) !important; }
-.gtable tbody .gday.holiday-col.weekend::after { content:"";position:absolute;inset:0;background:color-mix(in srgb,var(--text) 10%,transparent);pointer-events:none;z-index:6; }
-.gh-day.holiday-col.weekend { background:linear-gradient(color-mix(in srgb,var(--text) 11%,transparent),color-mix(in srgb,var(--text) 11%,transparent)),color-mix(in srgb,var(--holiday-color,#ef4444) 30%,var(--surface)) !important; color:var(--weekend-text) !important; font-weight:800; }
+.gday.holiday-col.weekend { background:linear-gradient(color-mix(in srgb,var(--text) 4%,transparent),color-mix(in srgb,var(--text) 4%,transparent)),color-mix(in srgb,var(--holiday-color,#ef4444) 16%,var(--surface)) !important; }
+.gtable tbody .gday.holiday-col.weekend::after { content:"";position:absolute;inset:0;background:color-mix(in srgb,var(--text) 4%,transparent);pointer-events:none;z-index:6; }
+.gh-day.holiday-col.weekend { background:linear-gradient(color-mix(in srgb,var(--text) 4%,transparent),color-mix(in srgb,var(--text) 4%,transparent)),color-mix(in srgb,var(--holiday-color,#ef4444) 17%,var(--surface)) !important; color:var(--weekend-text) !important; font-weight:800; }
+.gday.holiday-col.today-col { background:color-mix(in srgb,var(--accent-blue) 19%,color-mix(in srgb,var(--holiday-color,#ef4444) 10%,var(--surface))) !important; box-shadow:inset 2px 0 var(--accent-blue),inset -2px 0 var(--accent-blue) !important; z-index:3; }
+.gtable tbody .gday.holiday-col.today-col::after { background:transparent; }
+.gh-day.holiday-col.today-col { background:color-mix(in srgb,var(--accent-blue) 22%,color-mix(in srgb,var(--holiday-color,#ef4444) 10%,var(--surface))) !important; color:var(--accent-blue) !important; box-shadow:inset 2px 0 var(--accent-blue),inset -2px 0 var(--accent-blue); }
 .gday.span-label-cell { overflow: visible; z-index: 4; }
 .grid-span-label { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; font-weight: 700; pointer-events: none; text-align: left; }
 .sticky-left { position: sticky; left: 0; z-index: 20; background: var(--surface); }
@@ -571,6 +574,7 @@ body.dark .activity-past-toggle.active:hover { color: #0f1724; }
 /* ── Modals ──────────────────────────────────────────────────── */
 .modal-bg { display: none; position: fixed; inset: 0; background: rgba(9,18,34,.58); backdrop-filter: blur(4px); z-index: 100; align-items: flex-start; justify-content: center; padding: 16px; overflow: auto; }
 .modal-bg.open { display: flex; }
+.modal-bg.settings-flow-open { z-index: 110; }
 #settings-modal.modal-bg { align-items:center; }
 #settings-modal .settings-shell { flex:0 0 auto; }
 .modal { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 16px; padding: 26px; width: 480px; max-width: 100%; max-height: calc(100vh - 32px); overflow: auto; box-shadow: 0 24px 80px rgba(0,0,0,.25); margin: auto; }
