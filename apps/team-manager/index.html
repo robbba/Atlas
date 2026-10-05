@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=34">
+<link rel="stylesheet" href="css/styles.css?v=36">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -302,7 +302,7 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
       <div class="swatches" id="af-swatches"></div>
     </div>
     <div class="form-row">
-      <label>Participants <span id="af-participant-count" class="muted" style="font-weight:400"></span></label>
+      <div class="flex items-center justify-between gap-2" style="margin-bottom:6px"><label style="margin:0">Participants <span id="af-participant-count" class="muted" style="font-weight:400"></span></label><span class="flex gap-2"><button class="btn btn-sm" type="button" title="Select all personnel matching the activity targets" onclick="selectAllActivityParticipants()">Select all</button><button class="btn btn-sm" type="button" onclick="clearActivityParticipants()">Clear</button></span></div>
       <div id="af-participants" class="participant-list"></div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;cursor:pointer;margin:2px 0 12px">
@@ -584,6 +584,6 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
   </div>
 </div>
 <script src="app/workwheel.js?v=9"></script>
-<script src="app/app.js?v=53"></script>
+<script src="app/app.js?v=59"></script>
 </body>
 </html>
