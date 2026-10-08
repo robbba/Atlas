@@ -128,13 +128,8 @@ const DEFAULT_WORK_CODES = [];
 const DEFAULT_SHIFT_TEMPLATES = [];
 const ORGANIZATION_HIERARCHY_LEVELS = ['department', 'section', 'process', 'team'];
 function normalizeOrganizationHierarchyLevels(value) {
-  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const levels = {};
-  for (const level of ORGANIZATION_HIERARCHY_LEVELS) levels[level] = source[level] !== false;
-  // Hierarchy levels are sequential; a deeper level requires every level above it.
-  for (let index = 1; index < ORGANIZATION_HIERARCHY_LEVELS.length; index++) {
-    if (!levels[ORGANIZATION_HIERARCHY_LEVELS[index - 1]]) levels[ORGANIZATION_HIERARCHY_LEVELS[index]] = false;
-  }
+  for (const level of ORGANIZATION_HIERARCHY_LEVELS) levels[level] = true;
   return levels;
 }
 function enabledOrganizationHierarchyLevels() {
@@ -747,7 +742,8 @@ function toggleAutoSync() {
   updateSyncButton();
 }
 function applyAppName() {
-  const organisationName = appSettings.appName || 'Organisation';
+  const organisationName = appSettings.personnelOrganisationName || appSettings.appName || 'Organisation';
+  appSettings.appName = organisationName;
   document.getElementById('sb-app-name').textContent = 'ATLAS';
   document.title = `ATLAS — ${organisationName}`;
   document.querySelectorAll('.organisation-name-header').forEach((element) => {
@@ -814,33 +810,9 @@ function setSettingsReadOnly(readOnly) {
 function populateOrganizationSettings() {
   const name = document.getElementById('organization-management-name');
   if (name) name.value = appSettings.personnelOrganisationName || 'Organisation';
-  const levels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
-  ORGANIZATION_HIERARCHY_LEVELS.forEach(level => {
-    const checkbox = document.getElementById(`organization-level-${level}`);
-    if (!checkbox) return;
-    checkbox.checked = levels[level];
-    checkbox.onchange = () => {
-      const changedIndex = ORGANIZATION_HIERARCHY_LEVELS.indexOf(level);
-      if (!checkbox.checked) ORGANIZATION_HIERARCHY_LEVELS.slice(changedIndex + 1).forEach(dependentLevel => {
-        const dependent = document.getElementById(`organization-level-${dependentLevel}`);
-        if (dependent) dependent.checked = false;
-      });
-      let previousChecked = true;
-      ORGANIZATION_HIERARCHY_LEVELS.forEach(currentLevel => {
-        const currentInput = document.getElementById(`organization-level-${currentLevel}`);
-        if (!currentInput) return;
-        currentInput.disabled = !previousChecked;
-        if (!previousChecked) currentInput.checked = false;
-        previousChecked = currentInput.checked;
-      });
-    };
-    checkbox.disabled = hostedMode && hostedUser?.role !== 'admin';
-  });
   renderOrganizationManagementStructure();
 }
 function populateSettingsPanes() {
-  const appName = document.getElementById('set-app-name');
-  if (appName) appName.value = appSettings.appName || '';
   const secLabel = normalizeSecurityLabel(appSettings.securityLabel || {});
   document.getElementById('set-security-label-enabled').checked = secLabel.enabled === true;
   document.getElementById('set-security-label-text').value = secLabel.text || '';
@@ -1897,7 +1869,6 @@ async function saveSettings() {
     showToast('Only administrators can save planner settings.', 3500);
     return;
   }
-  const name = document.getElementById('set-app-name').value.trim();
   const organisationName = String(document.getElementById('organization-management-name')?.value || '').trim().slice(0, 120);
   if (!organisationName) {
     switchSettingsTab('organisation');
@@ -1932,9 +1903,6 @@ async function saveSettings() {
     }
     rotationRanges[key] = value;
   }
-  const candidateLevels = {};
-  ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { candidateLevels[level] = document.getElementById(`organization-level-${level}`)?.checked === true; });
-  const organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(candidateLevels);
   const securityLabel = normalizeSecurityLabel({
     enabled: document.getElementById('set-security-label-enabled').checked,
     text: document.getElementById('set-security-label-text').value,
@@ -1962,9 +1930,9 @@ async function saveSettings() {
   }
 
   await mutateState('saveSettings', () => {
-    if (name) appSettings.appName = name;
     appSettings.personnelOrganisationName = organisationName;
-    appSettings.organizationHierarchyLevels = organizationHierarchyLevels;
+    appSettings.appName = organisationName;
+    appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels();
     appSettings.lightMax = lightMax;
     appSettings.normalMax = normalMax;
     appSettings.highMax = highMax;
@@ -3371,6 +3339,7 @@ function loadFromData(data) {
     appSettings.shiftRotationRanges = normalizeShiftRotationRanges(appSettings.shiftRotationRanges);
     appSettings.holidays = Array.isArray(appSettings.holidays) ? appSettings.holidays : [];
     appSettings.specialDays = normalizeSpecialDays(appSettings.specialDays);
+    appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(appSettings.organizationHierarchyLevels);
   }
   appSettings.departmentColors = normalized.departmentColors && typeof normalized.departmentColors === 'object'
     ? Object.fromEntries(Object.entries(normalized.departmentColors).map(([dept, value]) => [String(dept), normalizeHexColor(value)]))
@@ -3406,6 +3375,7 @@ function loadFromData(data) {
   const legacyOrganisation = (normalized.employees || []).map(employee => String(employee.organisation || employee.organization || '').trim()).find(Boolean);
   const legacyPlannerName = String(normalized.appSettings?.appName || '').trim();
   appSettings.personnelOrganisationName = String(configuredPersonnelOrganisation || legacyOrganisation || legacyPlannerName || 'Organisation').trim().slice(0, 120) || 'Organisation';
+  appSettings.appName = appSettings.personnelOrganisationName;
   employees = (normalized.employees || []).map(e => ({
     ...e,
     id: +e.id,
@@ -3709,7 +3679,7 @@ function showHostedAuthScreen(mode, message = '') {
     if (checksDescription) checksDescription.textContent = 'Let personnel leaders check that activities and schedule entries match an external billing or verification system.';
   }
   const organizationStep = screen.querySelector('.atlas-wizard-step[data-step="2"]');
-  if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organization</h2><p>Name your organization and choose its hierarchy. You can change these later in Settings → Manage Organization.</p><label>Organization name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required><small>This is the organization root, separate from the application name.</small></label><div class="organization-level-list"><label><input type="checkbox" id="atlas-auth-level-department" checked><span><b>Department</b><small>Top-level division</small></span></label><label><input type="checkbox" id="atlas-auth-level-section" checked><span><b>Section</b><small>Group within a department</small></span></label><label><input type="checkbox" id="atlas-auth-level-process" checked><span><b>Process</b><small>Functional area within a section</small></span></label><label><input type="checkbox" id="atlas-auth-level-team" checked><span><b>Team</b><small>Smallest planning group</small></span></label></div><div class="form-hint">Choose the levels that match your organization, in order. You can change these later in Settings.</div>';
+  if (organizationStep) organizationStep.innerHTML = '<div class="atlas-wizard-kicker">Step 2 of 5</div><h2>Organisation</h2><p>Name your organisation. This name appears as the planner heading and on personnel records.</p><label>Organisation name<input id="atlas-auth-organisation-name" maxlength="120" placeholder="e.g. Operations Team" required></label>';
   if (mode === 'login') screen.querySelector('#atlas-auth-form')?.insertAdjacentHTML('afterbegin', '');
   const form = screen.querySelector('#atlas-auth-form');
   const error = screen.querySelector('#atlas-auth-error');
@@ -3757,9 +3727,7 @@ function showHostedAuthScreen(mode, message = '') {
       const payload = { username: form.querySelector('#atlas-auth-username').value, password: form.querySelector('#atlas-auth-password').value };
       if (mode === 'setup') payload.organizationName = form.querySelector('#atlas-auth-organisation-name').value.trim();
       if (mode === 'setup') {
-        const levels = {};
-        ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { levels[level] = form.querySelector(`#atlas-auth-level-${level}`)?.checked === true; });
-        Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, organizationHierarchyLevels: normalizeOrganizationHierarchyLevels(levels), timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
+        Object.assign(payload, { name: form.querySelector('#atlas-auth-name').value, email: form.querySelector('#atlas-auth-email').value, organizationName: form.querySelector('#atlas-auth-organisation-name').value, timezone: form.querySelector('#atlas-auth-timezone')?.value || 'UTC', shiftRotationEnabled: form.querySelector('#atlas-auth-shift-rotation').checked, operationalChecksEnabled: form.querySelector('#atlas-auth-operational-checks').checked, workwheelEnabled: form.querySelector('#atlas-auth-workwheel').checked });
       }
       const endpoint = mode === 'setup' ? '/api/setup/create-admin' : '/api/auth/login';
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
@@ -3776,9 +3744,8 @@ function showHostedAuthScreen(mode, message = '') {
       if (mode === 'setup') {
         const personnelOrganisationName = form.querySelector('#atlas-auth-organisation-name').value.trim().slice(0, 120) || 'Organisation';
         appSettings.personnelOrganisationName = personnelOrganisationName;
-        const levels = {};
-        ORGANIZATION_HIERARCHY_LEVELS.forEach(level => { levels[level] = form.querySelector(`#atlas-auth-level-${level}`)?.checked === true; });
-        appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels(levels);
+        appSettings.appName = personnelOrganisationName;
+        appSettings.organizationHierarchyLevels = normalizeOrganizationHierarchyLevels();
         employees.forEach(employee => { employee.organisation = personnelOrganisationName; });
         applyAppName();
         await saveState(true);
@@ -6122,7 +6089,8 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
 
   const primaryActivity = rotationMeta ? null : acts[0];
   const entryWorkCode = entry?.workCodeId ? (appSettings.workCodes || []).find(code => code.id === entry.workCodeId) : null;
-  const workwheelMarker = workwheelEvents.length ? `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(workwheelEvents[0].color || '#3b82f6')}" title="${esc(workwheelEvents.map(event => event.title).join('\n'))}">◉${workwheelEvents.length > 1 ? `<small>${workwheelEvents.length}</small>` : ''}</span>` : '';
+  let workwheelMarker = workwheelEvents.length ? `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(workwheelEvents[0].color || '#3b82f6')}" title="${esc(workwheelEvents.map(event => event.title).join('\n'))}">◉${workwheelEvents.length > 1 ? `<small>${workwheelEvents.length}</small>` : ''}</span>` : '';
+  if (cellNote && !primaryActivity && !rotation && !cellText) workwheelMarker += `<span class="cell-note-indicator" role="img" aria-label="Cell note" title="Cell note: ${esc(cellNote)}">N</span>`;
   const checkedActivity = bossSessionActive ? participantActivitiesForDate(emp.id, ds).find(act => activityRelevantToEmployee(act, emp) && isBossCheckSet(emp.id, ds, 'activity', act.id)) : null;
   const checkedStatus = bossSessionActive && si && isBossCheckSet(emp.id, ds, 'status', si.key) ? si : null;
   const activitySpanDays = primaryActivity ? Math.max(1, Math.round((new Date(`${primaryActivity.endDate}T00:00:00`) - new Date(`${primaryActivity.startDate}T00:00:00`)) / 86400000) + 1) : 1;
@@ -6168,7 +6136,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
     : '';
   const birthdayBadge = birthday ? `<span class="birthday-cake" title="${esc(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`)}" aria-label="${esc(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`)}">${svgIcon('cake', 'Birthday')}</span>` : '';
   const overtimeBadge = overtime
-    ? `<span class="overtime-badge" title="Overtime: ${formatHoursNumber(overtime.hours)}h${overtime.note ? ` · ${esc(overtime.note)}` : ''}">OT ${formatHoursNumber(overtime.hours)}h</span>`
+    ? `<span class="overtime-badge${!primaryActivity && !rotation && !cellText ? ' overtime-badge-empty' : ''}" title="Overtime: ${formatHoursNumber(overtime.hours)}h${overtime.note ? ` · ${esc(overtime.note)}` : ''}">OT ${formatHoursNumber(overtime.hours)}h</span>`
     : '';
   const hostedCheckSubjectKind = primaryActivity || si ? 'schedule_cell' : null;
   const hostedCheckSubjectKey = primaryActivity || si ? 'cell' : null;

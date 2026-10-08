@@ -488,6 +488,9 @@ async function renderWorkwheel() {
   if (toolbar && !toolbar.querySelector('.workwheel-save-status')) {
     toolbar.insertAdjacentHTML('afterbegin', '<span class="workwheel-save-status" role="status" aria-live="polite"></span><button type="button" class="btn btn-sm workwheel-save-retry" onclick="retryHostedWorkwheelSave()" hidden>Retry save</button>');
   }
+  if (wheel && !toolbar.querySelector('.workwheel-delete')) {
+    toolbar.querySelector('.workwheel-zoom')?.insertAdjacentHTML('afterend', `<button type="button" class="btn btn-sm btn-danger workwheel-delete" onclick="confirmDeleteWorkwheel()" ${canEdit ? '' : 'disabled'}>Delete wheel</button>`);
+  }
   updateWorkwheelSaveIndicator();
 }
 function selectWorkwheel(id) { workwheelSelectedId = id; renderWorkwheel(); }
@@ -522,6 +525,19 @@ function addWorkwheel() {
   if (section) section.value = '';
   document.getElementById('workwheel-create-modal')?.classList.add('open');
   setTimeout(() => name?.focus(), 30);
+}
+async function confirmDeleteWorkwheel() {
+  const wheel = workwheelState.wheels.find(item => item.id === workwheelSelectedId);
+  if (!wheel) return;
+  if (!workwheelCanEdit(wheel)) { alert('You have view-only access to this Workwheel.'); return; }
+  const activityCount = workwheelState.activities.filter(activity => activity.wheelId === wheel.id).length;
+  const activityLabel = activityCount === 1 ? 'activity' : 'activities';
+  if (!confirm(`Delete "${wheel.name}" and its ${activityCount} Workwheel ${activityLabel}? Items already published to Schedule will remain there.`)) return;
+  workwheelState.wheels = workwheelState.wheels.filter(item => item.id !== wheel.id);
+  workwheelState.activities = workwheelState.activities.filter(activity => activity.wheelId !== wheel.id);
+  workwheelSelectedId = workwheelState.wheels[0]?.id || '';
+  await saveWorkwheelState();
+  renderWorkwheel();
 }
 async function saveNewWorkwheel() {
   if (typeof hostedUser !== 'undefined' && hostedUser?.role === 'viewer') { alert('You have view-only access to Workwheels.'); return; }
