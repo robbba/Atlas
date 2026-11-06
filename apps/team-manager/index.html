@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=39">
+<link rel="stylesheet" href="css/styles.css?v=41">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -260,12 +260,13 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
       </div>
       <div class="form-row" style="margin:0"><label>Activity status</label><select id="af-status" class="plain-select" style="width:100%"><option value="tentative">Planned</option><option value="confirmed">Confirmed</option><option value="cancelled">Cancelled</option></select></div>
     </div>
+    <div class="form-row" style="margin:0 0 6px"><label>Organisational view visibility</label><div class="form-hint">Choose which Schedule views display this activity. These targets do not limit which people can participate.</div></div>
     <div class="form-row-2">
-      <div class="form-row" style="margin:0"><label>Relevant departments <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-departments" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
-      <div class="form-row" style="margin:0"><label>Relevant sections <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-sections" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
-      <div class="form-row" style="margin:0"><label>Relevant processes <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-processes" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
+      <div class="form-row" style="margin:0"><label>Visible in departments <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-departments" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
+      <div class="form-row" style="margin:0"><label>Visible in sections <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-sections" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
+      <div class="form-row" style="margin:0"><label>Visible in processes <span class="muted" style="font-weight:400">(optional)</span></label><select id="af-relevance-processes" class="plain-select" multiple size="4" onchange="syncActivityRelevanceScope()"></select></div>
     </div>
-    <div class="flex items-center justify-between gap-2" style="margin-top:6px"><div class="form-hint" style="margin:0">A new activity inherits the current Schedule scope. Multiple selections combine within each category; categories combine together.</div><button class="btn btn-sm" type="button" onclick="clearActivityRelevanceScope()">Clear targets</button></div>
+    <div class="flex items-center justify-between gap-2" style="margin-top:6px"><div class="form-hint" style="margin:0">New activities inherit the current Schedule view. Multiple choices within one field combine; different fields apply together.</div><button class="btn btn-sm" type="button" title="Show this activity in all organisational views" onclick="clearActivityRelevanceScope()">Show in all views</button></div>
     <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer;margin:8px 0"><input type="checkbox" id="af-count-load" checked> Counts toward staffing load</label>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(140px,1fr));gap:12px;max-width:620px">
       <div class="form-row" style="margin:0"><label>Day shift hours</label><input id="af-day-shift" placeholder="0730-2400"></div>
@@ -297,8 +298,8 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
       <div class="swatches" id="af-swatches"></div>
     </div>
     <div class="form-row">
-      <div class="flex items-center justify-between gap-2" style="margin-bottom:6px"><label style="margin:0">Participants <span id="af-participant-count" class="muted" style="font-weight:400"></span></label><span class="flex gap-2"><button class="btn btn-sm" type="button" title="Select all personnel matching the activity targets" onclick="selectAllActivityParticipants()">Select all</button><button class="btn btn-sm" type="button" onclick="clearActivityParticipants()">Clear</button></span></div>
-      <div id="af-participants" class="participant-list"></div>
+      <div class="flex items-center justify-between gap-3" style="margin-bottom:6px"><div><label style="margin:0">Assigned participants <span id="af-participant-count" class="muted" style="font-weight:400">(0 selected)</span></label><div id="af-participant-summary" class="form-hint" style="margin-top:4px">No people selected</div></div><button class="btn btn-sm" type="button" onclick="openActivityParticipants()">Manage people</button></div>
+      <div class="form-hint">Participants are independent of organisational view visibility.</div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;cursor:pointer;margin:2px 0 12px">
       <input type="checkbox" id="af-prefill-cells">
@@ -310,6 +311,22 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
       <button class="btn" onclick="closeModal('act-modal')">Cancel</button>
       <button class="btn btn-primary" onclick="saveActivity()">Save</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-bg activity-participants-modal" id="activity-participants-modal">
+  <div class="modal participant-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="activity-participants-title">
+    <div class="flex items-center justify-between gap-3"><div><h3 id="activity-participants-title" style="margin:0">Select participants</h3><p class="modal-desc" style="margin:4px 0 0">Choose individuals for this activity. View targets do not filter this list.</p></div><button class="icon-btn" type="button" title="Close" onclick="closeActivityParticipants()">&times;</button></div>
+    <div class="participant-picker-toolbar">
+      <label>Search personnel<input id="af-participant-search" type="search" placeholder="Name, email, role or team" oninput="buildParticipantPicker()"></label>
+      <label>Department filter<select id="af-participant-department" class="plain-select" onchange="buildParticipantPicker()"><option value="">All departments</option></select></label>
+    </div>
+    <div class="participant-picker-actions">
+      <span id="activity-participant-picker-count" class="muted text-sm"></span>
+      <div class="flex gap-2"><button class="btn btn-sm" type="button" title="Add all people matching the view targets above" onclick="selectAllActivityParticipants()">Add view-target people</button><button class="btn btn-sm" type="button" onclick="selectFilteredActivityParticipants()">Select filtered</button><button class="btn btn-sm" type="button" onclick="clearActivityParticipants()">Clear selection</button></div>
+    </div>
+    <div id="af-participants" class="participant-list participant-picker-list"></div>
+    <div class="modal-actions"><button class="btn btn-primary" type="button" onclick="closeActivityParticipants()">Done</button></div>
   </div>
 </div>
 
@@ -508,7 +525,7 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
           <div class="form-row"><label>Audit information</label><div id="admin-audit-info" class="form-hint"></div></div>
           <div class="form-row"><label>Database statistics</label><div id="admin-statistics" class="admin-statistics"><div class="form-hint">Statistics are available to global administrators.</div></div></div>
           <div class="form-row"><label>Bug Report</label><label class="settings-check"><input id="set-bug-report-enabled" type="checkbox"> Show Bug Report in the sidebar</label><div class="form-hint">Feedback reports do not include planner data or passwords.</div></div>
-          <div class="form-row"><label>Data &amp; Backup</label><p class="form-hint" id="default-json-status"></p><div class="settings-action-row"><button class="btn" type="button" onclick="importData()">Choose Data File</button><button class="btn" id="save-local-as-btn" type="button" onclick="saveDataAs()">Save As…</button><button class="btn" type="button" onclick="loadExampleTestData()">Load example</button></div><input id="import-json-file" type="file" accept="application/json,.json" onchange="handleImportDataFile(event)" style="display:none"></div>
+          <div class="form-row"><label>Data &amp; Backup</label><p class="form-hint" id="default-json-status"></p><div class="settings-action-row"><button class="btn" type="button" onclick="importData()">Import selected data</button><button class="btn" type="button" title="Replace all active planner data with a full planner backup" onclick="importData({replace:true})">Replace full planner</button><button class="btn" id="save-local-as-btn" type="button" onclick="saveDataAs()">Save As…</button><button class="btn" type="button" onclick="loadExampleTestData()">Load example</button></div><input id="import-json-file" type="file" accept="application/json,.json" onchange="handleImportDataFile(event)" style="display:none"></div>
           <div class="form-row"><label>Data maintenance</label><div class="form-hint">Validation and orphan-reference cleanup run during loading and saving.</div><button class="btn btn-danger" type="button" onclick="factoryResetHostedApp()" style="margin-top:10px">Factory reset ATLAS</button><div class="form-hint">Permanently deletes hosted accounts, planner data, settings, sessions and audit history.</div></div>
         </section>
       </div>
@@ -571,7 +588,19 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
     </div>
   </div>
 </div>
+<div class="modal-bg" id="planner-import-modal">
+  <div class="modal" style="width:min(720px,calc(100vw - 32px));max-height:88vh;overflow:auto">
+    <div class="flex items-center justify-between gap-2"><h3 style="margin:0">Import selected data</h3><button class="icon-btn" type="button" title="Close" onclick="closePlannerImport()">&times;</button></div>
+    <p class="modal-desc">Bring personnel and activities from an ATLAS planner JSON into this planner. Existing records are kept; matching records are skipped.</p>
+    <div class="form-row"><label>Source planner file</label><div class="flex items-center gap-2" style="flex-wrap:wrap"><button class="btn" type="button" onclick="document.getElementById('planner-import-json-file').click()">Choose JSON file</button><span id="planner-import-file-name" class="form-hint">No file selected</span></div><div id="planner-import-error" class="form-hint" role="alert" style="color:var(--danger,#dc2626)"></div></div>
+    <input id="planner-import-json-file" type="file" accept="application/json,.json" onchange="handlePlannerImportFile(event)" style="display:none">
+    <div class="form-row"><label>Data to import</label><label class="settings-check"><input id="planner-import-personnel" type="checkbox" checked onchange="updatePlannerImportPreview()"> Personnel</label><label class="settings-check"><input id="planner-import-activities" type="checkbox" checked onchange="updatePlannerImportPreview()"> Activities and their cell assignments</label><div class="form-hint">Personnel matching an existing email are skipped. Existing activities are skipped when their name, dates, and view targets match.</div></div>
+    <div class="form-row"><label>Activity time frame</label><div class="form-row-2" style="margin:0"><label>From<input id="planner-import-from" type="date" onchange="updatePlannerImportPreview()"></label><label>To (optional)<input id="planner-import-to" type="date" onchange="updatePlannerImportPreview()"></label></div><div class="form-hint">Activities that overlap this period are included. The default starts today, so finished activities are skipped.</div></div>
+    <div id="planner-import-preview" class="atlas-setup-notice" role="status">Choose a planner file to preview the import.</div>
+    <div class="modal-actions"><button class="btn" type="button" onclick="closePlannerImport()">Cancel</button><button class="btn btn-primary" id="planner-import-submit" type="button" onclick="commitPlannerImport()" disabled>Import selected data</button></div>
+  </div>
+</div>
 <script src="app/workwheel.js?v=10"></script>
-<script src="app/app.js?v=63"></script>
+<script src="app/app.js?v=70"></script>
 </body>
 </html>

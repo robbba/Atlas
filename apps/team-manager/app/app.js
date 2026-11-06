@@ -2858,7 +2858,325 @@ async function saveDataAs() {
   }
 }
 
+let pendingPlannerImport = null;
+function plannerImportIdentity(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('nb-NO');
+}
+function plannerImportEmployeeKey(employee) {
+  const email = plannerImportIdentity(employee?.email);
+  if (email) return `email:${email}`;
+  const profile = [employee?.name, employee?.department, employeeSection(employee), employee?.role].map(plannerImportIdentity);
+  return profile.some(Boolean) ? `profile:${profile.join('|')}` : '';
+}
+function plannerImportActivityKey(activity) {
+  const relevance = activityRelevance(activity);
+  const name = plannerImportIdentity(activity?.name);
+  if (!name || !isValidIsoDate(activity?.startDate) || !isValidIsoDate(activity?.endDate)) return '';
+  return [name, activity.startDate, activity.endDate, plannerImportIdentity(activity.project),
+    ...['departments', 'sections', 'processes'].map(key => [...relevance[key]].map(plannerImportIdentity).sort().join(','))].join('\u0000');
+}
+function buildPlannerImportPlan(source, options = {}) {
+  const includePersonnel = options.includePersonnel === true;
+  const includeActivities = options.includeActivities === true;
+  const from = String(options.from || '').trim();
+  const to = String(options.to || '').trim();
+  if (!isValidIsoDate(from) || (to && !isValidIsoDate(to)) || (to && to < from)) throw new Error('Choose a valid activity date range.');
+
+  let employeeId = nextEmpId;
+  let categoryId = nextCatId;
+  let activityId = nextActId;
+  const employeeIdMap = new Map();
+  const existingEmployeesByKey = new Map();
+  employees.forEach(employee => {
+    const key = plannerImportEmployeeKey(employee);
+    if (key && !existingEmployeesByKey.has(key)) existingEmployeesByKey.set(key, employee);
+  });
+  const categoryIdMap = new Map();
+  const existingCategoriesByKey = new Map();
+  const sourceCategoriesByEmployee = new Map();
+  (source.employeeCategories || []).forEach(link => {
+    const employeeId = Number(link?.employeeId);
+    const categoryId = Number(link?.categoryId);
+    if (Number.isFinite(employeeId) && Number.isFinite(categoryId)) {
+      const values = sourceCategoriesByEmployee.get(employeeId) || [];
+      values.push(categoryId);
+      sourceCategoriesByEmployee.set(employeeId, values);
+    }
+  });
+  categories.forEach(category => {
+    const key = plannerImportIdentity(category.name || category.label);
+    if (key && !existingCategoriesByKey.has(key)) existingCategoriesByKey.set(key, category);
+  });
+  const newCategories = [];
+  if (includePersonnel) {
+    (source.categories || []).forEach(category => {
+      const key = plannerImportIdentity(category?.name || category?.label);
+      if (!key) return;
+      let destination = existingCategoriesByKey.get(key);
+      if (!destination) {
+        destination = { ...category, id: categoryId++ };
+        newCategories.push(destination);
+        existingCategoriesByKey.set(key, destination);
+      }
+      if (Number.isFinite(Number(category.id))) categoryIdMap.set(Number(category.id), destination.id);
+    });
+  }
+
+  const newEmployees = [];
+  let skippedPersonnel = 0;
+  (source.employees || []).forEach(employee => {
+    const sourceId = Number(employee.id);
+    const key = plannerImportEmployeeKey(employee);
+    const match = key ? existingEmployeesByKey.get(key) : null;
+    if (match) {
+      employeeIdMap.set(sourceId, Number(match.id));
+      skippedPersonnel++;
+      return;
+    }
+    if (!includePersonnel || !key) return;
+    const sourceCategoryIds = Array.isArray(employee.categoryIds) && employee.categoryIds.length
+      ? employee.categoryIds
+      : (sourceCategoriesByEmployee.get(sourceId) || []);
+    const mappedCategories = sourceCategoryIds
+      .map(id => categoryIdMap.get(Number(id))).filter(Number.isFinite);
+    const sourceShiftTeam = (source.appSettings?.shiftTeams || []).find(team => String(team.id) === String(employee.shiftTeamId));
+    const targetShiftTeam = sourceShiftTeam && (appSettings.shiftTeams || []).find(team => plannerImportIdentity(team.name) === plannerImportIdentity(sourceShiftTeam.name));
+    const importedEmployee = {
+      ...employee,
+      id: employeeId++,
+      organisation: appSettings.personnelOrganisationName || 'Organisation',
+      categoryIds: mappedCategories,
+      shiftTeamId: targetShiftTeam?.id || '',
+    };
+    newEmployees.push(importedEmployee);
+    employeeIdMap.set(sourceId, importedEmployee.id);
+    existingEmployeesByKey.set(key, importedEmployee);
+  });
+
+  const activityIdMap = new Map();
+  const existingActivitiesByKey = new Map();
+  activities.forEach(activity => {
+    const key = plannerImportActivityKey(activity);
+    if (key && !existingActivitiesByKey.has(key)) existingActivitiesByKey.set(key, activity);
+  });
+  const newActivities = [];
+  const newActivitySourceIds = new Set();
+  let skippedActivities = 0;
+  let outsideDateRange = 0;
+  let invalidActivities = 0;
+  let unmatchedParticipants = 0;
+  if (includeActivities) {
+    const sourceActivities = source.activities || source.projects || [];
+    sourceActivities.forEach(activity => {
+      if (!isValidIsoDate(activity.startDate) || !isValidIsoDate(activity.endDate) || activity.endDate < activity.startDate) {
+        invalidActivities++;
+        return;
+      }
+      if (activity.endDate < from || (to && activity.startDate > to)) {
+        outsideDateRange++;
+        return;
+      }
+      const key = plannerImportActivityKey(activity);
+      const match = key ? existingActivitiesByKey.get(key) : null;
+      if (match) {
+        activityIdMap.set(Number(activity.id), Number(match.id));
+        skippedActivities++;
+        return;
+      }
+      const sourceParticipants = Array.isArray(activity.participants) ? activity.participants : (activity.employeeIds || []).map(id => ({ id }));
+      const mappedParticipants = [];
+      const participantIds = new Set();
+      sourceParticipants.forEach(participant => {
+        const mappedId = employeeIdMap.get(Number(participant?.id));
+        if (mappedId === undefined) { unmatchedParticipants++; return; }
+        if (!participantIds.has(mappedId)) {
+          participantIds.add(mappedId);
+          mappedParticipants.push({ id: mappedId });
+        }
+      });
+      const importedActivity = {
+        ...activity,
+        id: activityId++,
+        participants: mappedParticipants,
+        relevance: normalizeActivityRelevance(activity.relevance || { departments: activity.departments, sections: activity.sections, processes: activity.processes }),
+      };
+      newActivities.push(importedActivity);
+      newActivitySourceIds.add(Number(activity.id));
+      activityIdMap.set(Number(activity.id), importedActivity.id);
+      if (key) existingActivitiesByKey.set(key, importedActivity);
+    });
+  }
+
+  const destinationWorkCodes = [...(appSettings.workCodes || [])];
+  const sourceWorkCodes = source.workCodes || source.appSettings?.workCodes || [];
+  const newWorkCodes = [];
+  const sourceWorkCodeMap = new Map();
+  let unmappedWorkCodes = 0;
+  const mapWorkCode = sourceId => {
+    const sourceKey = String(sourceId || '');
+    if (!sourceKey) return null;
+    if (sourceWorkCodeMap.has(sourceKey)) return sourceWorkCodeMap.get(sourceKey);
+    const sourceCode = sourceWorkCodes.find(code => String(code.id) === sourceKey);
+    if (!sourceCode) { unmappedWorkCodes++; sourceWorkCodeMap.set(sourceKey, null); return null; }
+    const existing = destinationWorkCodes.find(code => plannerImportIdentity(code.name) === plannerImportIdentity(sourceCode.name));
+    if (existing) { sourceWorkCodeMap.set(sourceKey, existing.id); return existing.id; }
+    const normalized = normalizeWorkCodes([sourceCode])[0];
+    const usedIds = new Set(destinationWorkCodes.map(code => String(code.id)));
+    const baseId = String(normalized.id || 'imported');
+    let importedId = baseId;
+    let suffix = 2;
+    while (usedIds.has(importedId)) importedId = `import-${baseId}-${suffix++}`;
+    const imported = { ...normalized, id: importedId };
+    destinationWorkCodes.push(imported);
+    newWorkCodes.push(imported);
+    sourceWorkCodeMap.set(sourceKey, importedId);
+    return importedId;
+  };
+  const sourceAssignments = source.activityShiftsMap && typeof source.activityShiftsMap === 'object'
+    ? source.activityShiftsMap
+    : Object.fromEntries((source.activityShifts || []).filter(assignment => assignment?.date).map(assignment => {
+      const employeeId = Number(assignment.employeeId);
+      const sourceActivityId = Number(assignment.activityId ?? assignment.projectId);
+      return [`${employeeId}_${assignment.date}_${sourceActivityId}`, {
+        shift: assignment.shift || 'normal',
+        workCodeId: assignment.workCodeId || null,
+        administrativeTime: String(assignment.administrativeTime || ''),
+        assigned: assignment.excluded === true ? false : assignment.assigned !== false,
+        excluded: assignment.excluded === true,
+      }];
+    }));
+  const newAssignments = {};
+  let skippedAssignments = 0;
+  Object.entries(sourceAssignments).forEach(([key, value]) => {
+    if (value == null) return;
+    const [sourceEmployeeId, date, sourceActivityId] = key.split('_');
+    const sourceActivityNumber = Number(sourceActivityId);
+    if (!newActivitySourceIds.has(sourceActivityNumber) || !isValidIsoDate(date) || date < from || (to && date > to)) return;
+    const mappedEmployeeId = employeeIdMap.get(Number(sourceEmployeeId));
+    const mappedActivityId = activityIdMap.get(sourceActivityNumber);
+    if (mappedEmployeeId === undefined || mappedActivityId === undefined) { skippedAssignments++; return; }
+    const destinationKey = `${mappedEmployeeId}_${date}_${mappedActivityId}`;
+    if (Object.prototype.hasOwnProperty.call(activityShiftsMap, destinationKey) && activityShiftsMap[destinationKey] != null) { skippedAssignments++; return; }
+    const assignment = typeof value === 'string' ? { shift: value } : { ...value };
+    assignment.workCodeId = mapWorkCode(assignment.workCodeId);
+    newAssignments[destinationKey] = assignment;
+  });
+
+  const activityTypeKeys = new Set((appSettings.activityTypes || []).map(type => String(type.key || '')));
+  const usedActivityTypeKeys = new Set(newActivities.map(activity => String(activity.type || '')).filter(Boolean));
+  const newActivityTypes = normalizeActivityTypes(source.activityTypes || source.appSettings?.activityTypes)
+    .filter(type => usedActivityTypeKeys.has(type.key) && !activityTypeKeys.has(type.key));
+
+  return {
+    newCategories, newEmployees, newActivities, newAssignments, newWorkCodes, newActivityTypes, skippedPersonnel, skippedActivities,
+    outsideDateRange, invalidActivities, unmatchedParticipants, skippedAssignments, unmappedWorkCodes,
+    nextEmpId: employeeId, nextCatId: categoryId, nextActId: activityId,
+  };
+}
+function updatePlannerImportPreview() {
+  const preview = document.getElementById('planner-import-preview');
+  const submit = document.getElementById('planner-import-submit');
+  const activitiesEnabled = document.getElementById('planner-import-activities').checked;
+  document.getElementById('planner-import-from').disabled = !activitiesEnabled;
+  document.getElementById('planner-import-to').disabled = !activitiesEnabled;
+  if (!pendingPlannerImport) { preview.textContent = 'Choose a planner file to preview the import.'; submit.disabled = true; return; }
+  try {
+    const plan = buildPlannerImportPlan(pendingPlannerImport.data, {
+      includePersonnel: document.getElementById('planner-import-personnel').checked,
+      includeActivities: activitiesEnabled,
+      from: document.getElementById('planner-import-from').value,
+      to: document.getElementById('planner-import-to').value,
+    });
+    const rows = [];
+    if (document.getElementById('planner-import-personnel').checked) rows.push(`Personnel: ${plan.newEmployees.length} to add; ${plan.skippedPersonnel} matching records skipped; ${plan.newCategories.length} categories added.`);
+    if (activitiesEnabled) rows.push(`Activities: ${plan.newActivities.length} to add; ${plan.skippedActivities} duplicates skipped; ${plan.outsideDateRange} outside the date range; ${plan.invalidActivities} invalid dates skipped.`);
+    if (activitiesEnabled) rows.push(`Dependencies: ${plan.newActivityTypes.length} activity types and ${plan.newWorkCodes.length} work codes added. Activity cell assignments: ${Object.keys(plan.newAssignments).length} to add; ${plan.unmatchedParticipants} participant links, ${plan.skippedAssignments} assignments, and ${plan.unmappedWorkCodes} unknown work-code references skipped.`);
+    preview.textContent = rows.join(' ') || 'Select Personnel or Activities to import.';
+    submit.disabled = !plan.newEmployees.length && !plan.newActivities.length;
+  } catch (error) {
+    preview.textContent = error.message;
+    submit.disabled = true;
+  }
+}
+function openPlannerImport() {
+  pendingPlannerImport = null;
+  document.getElementById('planner-import-json-file').value = '';
+  document.getElementById('planner-import-file-name').textContent = 'No file selected';
+  document.getElementById('planner-import-error').textContent = '';
+  document.getElementById('planner-import-personnel').checked = true;
+  document.getElementById('planner-import-activities').checked = true;
+  document.getElementById('planner-import-from').value = todayStr();
+  document.getElementById('planner-import-to').value = '';
+  updatePlannerImportPreview();
+  document.querySelectorAll('.modal-bg.open').forEach(modal => closeModal(modal.id));
+  document.getElementById('planner-import-modal').classList.add('open');
+}
+function closePlannerImport() {
+  pendingPlannerImport = null;
+  closeModal('planner-import-modal');
+}
+async function handlePlannerImportFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const error = document.getElementById('planner-import-error');
+  error.textContent = '';
+  try {
+    const source = JSON.parse(await file.text());
+    validatePlannerData(source);
+    pendingPlannerImport = { data: source, fileName: file.name };
+    document.getElementById('planner-import-file-name').textContent = file.name;
+    updatePlannerImportPreview();
+  } catch (err) {
+    pendingPlannerImport = null;
+    error.textContent = `Could not read planner file: ${err?.message || 'Check the JSON format.'}`;
+    updatePlannerImportPreview();
+  } finally {
+    event.target.value = '';
+  }
+}
+async function commitPlannerImport() {
+  if (!pendingPlannerImport) return;
+  let plan;
+  try {
+    plan = buildPlannerImportPlan(pendingPlannerImport.data, {
+      includePersonnel: document.getElementById('planner-import-personnel').checked,
+      includeActivities: document.getElementById('planner-import-activities').checked,
+      from: document.getElementById('planner-import-from').value,
+      to: document.getElementById('planner-import-to').value,
+    });
+    if (!plan.newEmployees.length && !plan.newActivities.length) return;
+    await mutateState('importSelectedPlannerData', () => {
+      categories.push(...plan.newCategories);
+      employees.push(...plan.newEmployees);
+      activities.push(...plan.newActivities);
+      appSettings.workCodes = normalizeWorkCodes([...(appSettings.workCodes || []), ...plan.newWorkCodes]);
+      appSettings.activityTypes = normalizeActivityTypes([...(appSettings.activityTypes || []), ...plan.newActivityTypes]);
+      activityShiftsMap = { ...activityShiftsMap, ...plan.newAssignments };
+      nextEmpId = plan.nextEmpId;
+      nextCatId = plan.nextCatId;
+      nextActId = plan.nextActId;
+      ensureEmployeeSortOrders(employees);
+      ensureDepartmentOrders();
+      ensureSubdepartmentOrders();
+      employees.sort((a, b) => a.name.localeCompare(b.name, 'nb', { sensitivity: 'base' }));
+      activities.sort((a, b) => a.startDate.localeCompare(b.startDate));
+    }, { saveDisk: true });
+  } catch (err) {
+    document.getElementById('planner-import-error').textContent = `Import failed: ${err?.message || 'The planner could not be saved.'}`;
+    return;
+  }
+  const addedPersonnel = plan.newEmployees.length;
+  const addedActivities = plan.newActivities.length;
+  closePlannerImport();
+  renderPage();
+  showToast(`Imported ${addedPersonnel} personnel and ${addedActivities} activities. Existing records were kept.`, 6000);
+}
 function importData(options = {}) {
+  if (!options.replace && !options.required) {
+    openPlannerImport();
+    return false;
+  }
+  if (options.replace && !confirm('Replace all active planner data with the selected full planner file? This cannot be undone from this import dialog.')) return false;
   document.querySelectorAll('.modal-bg.open').forEach(modal => closeModal(modal.id));
   if (!preferBrowserJsonFileInput && typeof window.showOpenFilePicker === 'function') {
     void importDataWithPicker(options);
@@ -5936,10 +6254,9 @@ function jumpToActivity(activityId) {
   requestAnimationFrame(() => scrollToActivityCell(activity.id, visibleDate));
 }
 function cellActivities(empId, ds) {
-  const employee = empById(empId);
   return activities
     .filter(act => {
-      if (!(ds >= act.startDate && ds <= act.endDate && participantFor(act, empId) && activityRelevantToEmployee(act, employee))) return false;
+      if (!(ds >= act.startDate && ds <= act.endDate && participantFor(act, empId))) return false;
       const assignment = activityAssignment(`${empId}_${ds}_${act.id}`);
       return assignment.assigned === true && !assignment.excluded;
     })
@@ -5997,7 +6314,7 @@ function bossCheckDates(empId, kind, id, dates = pickerDates) {
   if (kind === 'status') return candidateDates.filter(date => getEntryObj(`${empId}_${date}`)?.status === id);
   const activity = activities.find(item => Number(item.id) === Number(id));
   if (!activity || !participantFor(activity, empId)) return [];
-  return candidateDates.filter(date => date >= activity.startDate && date <= activity.endDate && activityRelevantToEmployee(activity, empById(empId)));
+  return candidateDates.filter(date => date >= activity.startDate && date <= activity.endDate);
 }
 function bossCheckState(empId, kind, id) {
   const dates = bossCheckDates(empId, kind, id);
@@ -6090,8 +6407,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const primaryActivity = rotationMeta ? null : acts[0];
   const entryWorkCode = entry?.workCodeId ? (appSettings.workCodes || []).find(code => code.id === entry.workCodeId) : null;
   let workwheelMarker = workwheelEvents.length ? `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(workwheelEvents[0].color || '#3b82f6')}" title="${esc(workwheelEvents.map(event => event.title).join('\n'))}">◉${workwheelEvents.length > 1 ? `<small>${workwheelEvents.length}</small>` : ''}</span>` : '';
-  if (cellNote && !primaryActivity && !rotation && !cellText) workwheelMarker += `<span class="cell-note-indicator" role="img" aria-label="Cell note" title="Cell note: ${esc(cellNote)}">N</span>`;
-  const checkedActivity = bossSessionActive ? participantActivitiesForDate(emp.id, ds).find(act => activityRelevantToEmployee(act, emp) && isBossCheckSet(emp.id, ds, 'activity', act.id)) : null;
+  const checkedActivity = bossSessionActive ? participantActivitiesForDate(emp.id, ds).find(act => isBossCheckSet(emp.id, ds, 'activity', act.id)) : null;
   const checkedStatus = bossSessionActive && si && isBossCheckSet(emp.id, ds, 'status', si.key) ? si : null;
   const activitySpanDays = primaryActivity ? Math.max(1, Math.round((new Date(`${primaryActivity.endDate}T00:00:00`) - new Date(`${primaryActivity.startDate}T00:00:00`)) / 86400000) + 1) : 1;
   const gridActivityLabel = primaryActivity ? activityCellLabel(primaryActivity, activitySpanDays) : '';
@@ -6121,6 +6437,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
     cellText = [cellText, entryWorkCode.abbreviation || entryWorkCode.name].filter(Boolean).join(' · ');
     cellStyleStr += `;box-shadow:inset 0 -3px ${entryWorkCode.color};`;
   }
+  if (cellNote && !primaryActivity && !rotation && !cellText) workwheelMarker += `<span class="cell-note-indicator" role="img" aria-label="Cell note" title="Cell note: ${esc(cellNote)}">N</span>`;
 
   const customActivityShift = primaryActivity?.assignment.shift && !['normal', 'day', 'evening', 'night', 'turn'].includes(primaryActivity.assignment.shift);
   const dot = customActivityShift
@@ -6469,7 +6786,7 @@ function _showPicker(event, empId, dates) {
     : fmtMed(pickerDate);
   document.getElementById('pk-head').innerHTML = `<b>${esc(emp?.name || '')}</b>${dateLabel}`;
 
-  const acts = activities.filter(act => actParticipantIds(act).includes(empId) && activityRelevantToEmployee(act, emp) && pickerDates.some(date => date >= act.startDate && date <= act.endDate));
+  const acts = activities.filter(act => actParticipantIds(act).includes(empId) && pickerDates.some(date => date >= act.startDate && date <= act.endDate));
   const entry = getEntryObj(`${empId}_${pickerDate}`);
   pickerStatusLifecycle = entry?.lifecycle || 'confirmed';
   if (bossSessionActive) {
@@ -7278,34 +7595,66 @@ function quickCreateActivityType() {
   openStatusManager();
   setTimeout(() => document.getElementById('sf-label')?.focus(), 50);
 }
+function activityParticipantDepartment(employee) {
+  return String(employee?.department || (employeeSection(employee) ? 'Independent sections' : 'Unassigned')).trim();
+}
+function filteredActivityParticipantEmployees() {
+  const search = String(document.getElementById('af-participant-search')?.value || '').trim().toLocaleLowerCase('nb-NO');
+  const department = String(document.getElementById('af-participant-department')?.value || '');
+  return [...employees].sort(comparePersonnelHierarchy).filter(employee => {
+    if (department && activityParticipantDepartment(employee) !== department) return false;
+    if (!search) return true;
+    const searchableText = [employee.name, employee.email, employee.role, employee.department, employeeSection(employee), employee.process, employee.team, employee.level]
+      .filter(Boolean).join(' ').toLocaleLowerCase('nb-NO');
+    return searchableText.includes(search);
+  });
+}
+function renderActivityParticipantSummary() {
+  const count = document.getElementById('af-participant-count');
+  const summary = document.getElementById('af-participant-summary');
+  if (count) count.textContent = `(${selectedParticipants.length} selected)`;
+  if (!summary) return;
+  const names = selectedParticipants.map(person => empById(Number(person.id))?.name).filter(Boolean);
+  if (!selectedParticipants.length) { summary.textContent = 'No people selected'; return; }
+  const shown = names.slice(0, 3).join(', ');
+  const remaining = selectedParticipants.length - Math.min(names.length, 3);
+  summary.textContent = `${shown}${remaining > 0 ? ` + ${remaining} more` : ''}` || `${selectedParticipants.length} people selected`;
+}
 function buildParticipantPicker() {
   const container = document.getElementById('af-participants');
-  const count = document.getElementById('af-participant-count');
-  count.textContent = `(${selectedParticipants.length} selected)`;
-  if (!employees.length) { container.innerHTML = '<div class="muted text-sm" style="padding:8px 10px">Add personnel first to assign participants.</div>'; return; }
-  const relevance = {
-    departments: [...document.getElementById('af-relevance-departments').selectedOptions].map(option => option.value),
-    sections: [...document.getElementById('af-relevance-sections').selectedOptions].map(option => option.value),
-    processes: [...document.getElementById('af-relevance-processes').selectedOptions].map(option => option.value),
-  };
-  const ordered = sortedEmployees();
-  const eligible = ordered.filter(emp => activityRelevantToEmployee({ relevance }, emp));
-  const eligibleIds = new Set(eligible.map(emp => emp.id));
-  const outsideTargets = ordered.filter(emp => selectedParticipants.some(person => person.id === emp.id) && !eligibleIds.has(emp.id));
-  const renderPerson = (emp, outside = false) => {
-    const checked = selectedParticipants.some(p => p.id === emp.id);
-    return `<div class="participant-option${checked ? ' sel' : ''}${outside ? ' participant-outside-targets' : ''}">
+  if (!container) return;
+  renderActivityParticipantSummary();
+  const visibleEmployees = filteredActivityParticipantEmployees();
+  const pickerCount = document.getElementById('activity-participant-picker-count');
+  if (pickerCount) pickerCount.textContent = `Showing ${visibleEmployees.length} of ${employees.length} · ${selectedParticipants.length} selected`;
+  if (!employees.length) { container.innerHTML = '<div class="muted text-sm" style="padding:12px">Add personnel first to assign participants.</div>'; return; }
+  if (!visibleEmployees.length) { container.innerHTML = '<div class="muted text-sm" style="padding:12px">No personnel match this search and department filter.</div>'; return; }
+  container.innerHTML = visibleEmployees.map(employee => {
+    const checked = selectedParticipants.some(person => Number(person.id) === Number(employee.id));
+    const organisationPath = [employee.department, employeeSection(employee), employee.process, employee.team].filter(Boolean).join(' · ');
+    return `<div class="participant-option${checked ? ' sel' : ''}">
       <label class="participant-head">
-        <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleParticipant(${emp.id},this.checked)">
+        <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleParticipant(${employee.id},this.checked)">
         <span style="min-width:0;flex:1">
-          <span style="font-size:13px;font-weight:500">${esc(emp.name)}</span>
-          <small>${esc(emp.role)} · ${esc(emp.department)}${outside ? ' · Selected outside activity targets' : ''}</small>
+          <span style="font-size:13px;font-weight:600">${esc(employee.name)}</span>
+          <small>${esc([employee.role, organisationPath].filter(Boolean).join(' · '))}</small>
         </span>
       </label>
     </div>`;
-  };
-  const peopleMarkup = `${eligible.map(emp => renderPerson(emp)).join('')}${outsideTargets.length ? `<div class="participant-filter-note">Selected personnel outside the current targets</div>${outsideTargets.map(emp => renderPerson(emp, true)).join('')}` : ''}`;
-  container.innerHTML = peopleMarkup || '<div class="muted text-sm" style="padding:8px 10px">No personnel match the selected targets.</div>';
+  }).join('');
+}
+function openActivityParticipants() {
+  const departmentSelect = document.getElementById('af-participant-department');
+  const departments = [...new Set(employees.map(activityParticipantDepartment))].sort((a, b) => a.localeCompare(b, 'nb', { sensitivity: 'base' }));
+  departmentSelect.innerHTML = '<option value="">All departments</option>' + departments.map(department => `<option value="${esc(department)}">${esc(department)}</option>`).join('');
+  departmentSelect.value = '';
+  document.getElementById('af-participant-search').value = '';
+  buildParticipantPicker();
+  document.getElementById('activity-participants-modal').classList.add('open');
+  setTimeout(() => document.getElementById('af-participant-search').focus(), 30);
+}
+function closeActivityParticipants() {
+  closeModal('activity-participants-modal');
 }
 function toggleParticipant(id, checked) {
   if (checked) { if (!selectedParticipants.find(p => p.id === id)) selectedParticipants.push({ id }); }
@@ -7318,9 +7667,17 @@ function selectAllActivityParticipants() {
     sections: [...document.getElementById('af-relevance-sections').selectedOptions].map(option => option.value),
     processes: [...document.getElementById('af-relevance-processes').selectedOptions].map(option => option.value),
   };
-  selectedParticipants = sortedEmployees()
+  const matchingParticipants = employees
     .filter(emp => activityRelevantToEmployee({ relevance }, emp))
     .map(emp => ({ id: emp.id }));
+  const selectedIds = new Set(selectedParticipants.map(person => person.id));
+  selectedParticipants = [...selectedParticipants, ...matchingParticipants.filter(person => !selectedIds.has(person.id))];
+  buildParticipantPicker();
+}
+function selectFilteredActivityParticipants() {
+  const visibleParticipants = filteredActivityParticipantEmployees().map(employee => ({ id: employee.id }));
+  const selectedIds = new Set(selectedParticipants.map(person => Number(person.id)));
+  selectedParticipants = [...selectedParticipants, ...visibleParticipants.filter(person => !selectedIds.has(Number(person.id)))];
   buildParticipantPicker();
 }
 function clearActivityParticipants() {
@@ -7720,7 +8077,7 @@ function teamReportEntries(start, end) {
   return sortedEmployees().map(emp => {
     const employeeActivities = activities.filter(act => {
       const participant = participantFor(act, emp.id);
-      return act.startDate <= end && act.endDate >= start && participant && activityRelevantToEmployee(act, emp) && activityHasScheduledShift(act, emp.id, start, end);
+      return act.startDate <= end && act.endDate >= start && participant && activityHasScheduledShift(act, emp.id, start, end);
     })
       .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
     return { emp, activities: employeeActivities };
@@ -9596,8 +9953,7 @@ function renderDashboard() {
     const associatedActivities = activities
       .filter(activity => activityStatus(activity) !== 'cancelled'
         && participantFor(activity, emp.id)
-        && date >= activity.startDate && date <= activity.endDate
-        && activityRelevantToEmployee(activity, emp))
+        && date >= activity.startDate && date <= activity.endDate)
       .map(activity => activity.name)
       .filter((name, index, names) => name && names.indexOf(name) === index);
     const destination = associatedActivities.length

@@ -719,6 +719,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .participant-option.sel { background: color-mix(in srgb, var(--muted-bg) 55%, transparent); }
 .participant-filter-note { padding: 7px 10px; border-top: 1px solid var(--border); background: var(--muted-bg); color: var(--muted); font-size: 11px; font-weight: 650; }
 .participant-outside-targets { opacity: .78; }
+.activity-participants-modal { z-index: 120; align-items: center; }
+.participant-picker-dialog { display: flex; flex-direction: column; width: min(620px, calc(100vw - 32px)); height: min(82vh, 760px); max-height: calc(100vh - 32px); overflow: hidden; }
+.participant-picker-toolbar { display: grid; grid-template-columns: minmax(0,1fr) minmax(160px,220px); gap: 10px; margin: 16px 0 10px; }
+.participant-picker-toolbar label { display: grid; gap: 5px; min-width: 0; font-size: 12px; font-weight: 600; }
+.participant-picker-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.participant-picker-list { flex: 1 1 auto; min-height: 160px; max-height: none; overflow: auto; }
+@media (max-width: 560px) { .participant-picker-toolbar { grid-template-columns: 1fr; } .participant-picker-actions { align-items: flex-start; flex-direction: column; } }
 .participant-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .participant-head input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--primary); flex-shrink: 0; }
 .modal input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 16px; height: 16px; margin: 0; flex: 0 0 16px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); cursor: pointer; position: relative; transition: background .12s, border-color .12s, box-shadow .12s; }
