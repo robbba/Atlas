@@ -7813,6 +7813,25 @@ function meetingsForDate(date) {
     return false;
   }).sort((left, right) => (left.startTime || '').localeCompare(right.startTime || '') || left.title.localeCompare(right.title));
 }
+function validateMeetingsViewScopeFilter(value) {
+  const match = /^(department|section)::([\s\S]+)$/.exec(String(value || ''));
+  if (!match || !enabledOrganizationHierarchyLevels().includes(match[1])) return '';
+  const options = match[1] === 'department'
+    ? employees.map(employee => String(employee.department || '').trim())
+    : employees.map(employeeSection);
+  return options.includes(match[2]) ? String(value) : '';
+}
+function meetingsViewScopeParts() {
+  const match = /^(department|section)::([\\s\\S]+)$/.exec(meetingsScopeFilter);
+  return match ? { level: match[1], value: match[2] } : { level: '', value: '' };
+}
+function meetingMatchesScope(meeting, scope) {
+  if (!scope.level) return true;
+  const attendeeIds = new Set([...meeting.participantIds, meeting.responsibleId].map(Number).filter(Number.isFinite));
+  return employees.some(employee => attendeeIds.has(Number(employee.id)) && (scope.level === 'department'
+    ? String(employee.department || '').trim() === scope.value
+    : employeeSection(employee) === scope.value));
+}
 function meetingsWeekDates(referenceDate) {
   const start = new Date(`${referenceDate}T00:00:00`);
   start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
