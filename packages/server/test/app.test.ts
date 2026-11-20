@@ -131,11 +131,15 @@ test('only admins may change global organization configuration in planner saves'
     } });
     assert.equal(forbiddenLevels.statusCode, 403);
 
+    const plannerMeetings = { id: 'm1', title: 'Operations briefing', date: '2026-10-01', endDate: '', recurrence: 'fortnightly', weekday: 4, participantIds: [], status: 'confirmed' };
     const operationalUpdate = await app.inject({ method: 'POST', url: '/api/planner', headers: { cookie: plannerCookie }, payload: {
       expectedRevision: adminUpdate.json().revision,
-      document: { ...changed, savedAt: new Date().toISOString(), entriesMap: { ...changed.entriesMap, '999_2026-10-01': 'at_work' } },
+      document: { ...changed, savedAt: new Date().toISOString(), entriesMap: { ...changed.entriesMap, '999_2026-10-01': 'at_work' }, meetings: [plannerMeetings] },
     } });
     assert.equal(operationalUpdate.statusCode, 200);
+    assert.deepEqual(operationalUpdate.json().document.meetings, [plannerMeetings]);
+    const persistedMeetings = await app.inject({ method: 'GET', url: '/api/planner', headers: { cookie: adminCookie } });
+    assert.deepEqual(persistedMeetings.json().document.meetings, [plannerMeetings]);
     assert.equal(database.getUserById(plannerUser.id)?.role, 'planner');
   } finally {
     await app.close();

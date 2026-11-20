@@ -690,7 +690,7 @@ function randomUnitId(path: string): string {
 
 const plannerOperationalFields = new Set([
   'savedAt', 'lastChangedByUserId', 'entriesMap', 'activities', 'activityShiftsMap', 'cellNotesMap',
-  'overtimeMap', 'workScheduleChecksMap', 'shiftRotationMap',
+  'overtimeMap', 'workScheduleChecksMap', 'shiftRotationMap', 'meetings', 'meetingTypes',
 ]);
 
 function plannerUpdateIsOperationalOnly(current: Record<string, unknown>, next: Record<string, unknown>): boolean {

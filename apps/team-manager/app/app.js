@@ -461,6 +461,52 @@ function updateCoreHoursDisplayFromRangeInput() {
   output.textContent = hours ? `= ${hours} h/day` : 'Invalid range';
 }
 
+function normalizeMeetingTypes(value) {
+  const defaults = [
+    { id: 'meeting', name: 'Meeting', color: '#2563eb' },
+    { id: 'briefing', name: 'Briefing', color: '#0f766e' },
+    { id: 'orientation', name: 'Orientation', color: '#7c3aed' },
+    { id: 'other', name: 'Other', color: '#64748b' },
+  ];
+  const source = Array.isArray(value) ? value : defaults;
+  const seen = new Set();
+  const normalized = source.map((item, index) => {
+    const id = String(item?.id || `meeting-type-${index + 1}`).trim().slice(0, 64);
+    const name = String(item?.name || '').trim().slice(0, 48);
+    if (!id || !name || seen.has(id)) return null;
+    seen.add(id);
+    return { id, name, color: normalizeHexColor(item?.color, '#64748b') };
+  }).filter(Boolean);
+  return normalized.length ? normalized : defaults;
+}
+function normalizeMeetings(value, typeDefinitions = meetingTypes) {
+  if (!Array.isArray(value)) return [];
+  const typeColors = new Map((Array.isArray(typeDefinitions) ? typeDefinitions : []).map(type => [String(type.id), type.color]));
+  const seen = new Set();
+  return value.map((item, index) => {
+    const id = String(item?.id || `meeting-${index + 1}`).trim().slice(0, 80);
+    const title = String(item?.title || '').trim().slice(0, 120);
+    const date = String(item?.date || '');
+    if (!id || !title || !isValidIsoDate(date) || seen.has(id)) return null;
+    seen.add(id);
+    const rawAttendees = item.externalAttendees ?? item.attendees;
+    const recurrence = ['none', 'daily', 'weekly', 'fortnightly', 'monthly'].includes(item.recurrence) ? item.recurrence : 'none';
+    return {
+      id, title, typeId: String(item.typeId || 'meeting').slice(0, 64), date,
+      endDate: recurrence === 'none' ? (isValidIsoDate(item.endDate) && item.endDate >= date ? item.endDate : date) : (isValidIsoDate(item.endDate) && item.endDate > date ? item.endDate : ''),
+      startTime: String(item.startTime || '').trim().slice(0, 5), endTime: String(item.endTime || '').trim().slice(0, 5),
+      allDay: item.allDay === true, location: String(item.location || '').trim().slice(0, 160),
+      notes: String(item.notes || '').trim().slice(0, 1000),
+      status: ['planned', 'confirmed', 'cancelled'].includes(item.status) ? item.status : 'planned',
+      showInEmployeeGrid: item.showInEmployeeGrid !== false,
+      participantIds: [...new Set((Array.isArray(item.participantIds) ? item.participantIds : []).map(Number).filter(Number.isFinite))],
+      responsibleId: Number.isFinite(Number(item.responsibleId)) ? Number(item.responsibleId) : null,
+      externalAttendees: Array.isArray(rawAttendees) ? rawAttendees.map(attendee => typeof attendee === 'string' ? attendee : attendee?.name).filter(Boolean).join(', ').slice(0, 500) : String(rawAttendees || '').trim().slice(0, 500),
+      recurrence, weekday: Number.isInteger(Number(item.weekday)) ? Number(item.weekday) : new Date(`${date}T00:00:00`).getDay(),
+      color: normalizeHexColor(typeColors.get(String(item.typeId)) || item.color, '#2563eb'),
+    };
+  }).filter(Boolean);
+}
 function normalizeStateVersion(data) {
   const raw = data && typeof data === 'object' ? data : {};
   const normalized = { ...raw };
@@ -486,6 +532,10 @@ function normalizeStateVersion(data) {
   normalized.departmentOrder = normalizeHierarchyOrder(raw.departmentOrder);
   normalized.subdepartmentOrder = normalizeHierarchyOrder(raw.subdepartmentOrder || raw.subteamOrder);
   normalized.hierarchyOrder = normalizeHierarchyOrderTree(raw.hierarchyOrder);
+  normalized.meetingTypes = normalizeMeetingTypes(raw.meetingTypes);
+  normalized.meetings = normalizeMeetings(raw.meetings || [], normalized.meetingTypes);
+  normalized.appSettings ||= {};
+  normalized.appSettings.meetingLookaheadDays = [3, 7, 14, 30].includes(Number(normalized.appSettings.meetingLookaheadDays)) ? Number(normalized.appSettings.meetingLookaheadDays) : 14;
   return normalized;
 }
 
@@ -818,6 +868,8 @@ function populateSettingsPanes() {
   document.getElementById('set-security-label-text').value = secLabel.text || '';
   document.getElementById('set-security-label-color').value = secLabel.color;
   document.getElementById('set-workwheel-enabled').checked = appSettings.workwheelEnabled === true;
+  const meetingLookaheadField = document.getElementById('set-meeting-lookahead-days');
+  if (meetingLookaheadField) meetingLookaheadField.value = String(appSettings.meetingLookaheadDays || 14);
   document.getElementById('set-workwheel-upcoming-days').value = String(appSettings.workwheelUpcomingDays || 14);
   document.getElementById('set-workwheel-grid-display').value = ['cells', 'both', 'row', 'none'].includes(appSettings.workwheelGridDisplayMode) ? appSettings.workwheelGridDisplayMode : 'cells';
   document.getElementById('set-my-schedule-lookahead-days').value = String(appSettings.myScheduleLookaheadDays || 31);
@@ -895,6 +947,7 @@ function updateHostedAccountUi() {
   if (avatar) avatar.textContent = authenticated ? hostedUser.name.trim().split(/\s+/).slice(0, 2).map(part => part[0] || '').join('').toUpperCase() : '';
   const personalNav = document.getElementById('my-upcoming-nav');
   if (personalNav) personalNav.style.display = authenticated && hostedUser.employeeId !== null && hostedUser.employeeId !== undefined ? '' : 'none';
+  updateMeetingsNavigation();
   const absenceInboxNav = document.getElementById('absence-inbox-nav');
   if (absenceInboxNav) absenceInboxNav.style.display = authenticated && hostedUser.role === 'admin' ? '' : 'none';
   if (authenticated && hostedUser.role === 'admin') void updateAbsenceInboxBadge();
@@ -1946,6 +1999,7 @@ async function saveSettings() {
     appSettings.planningHorizonColor = planningHorizonColor;
     appSettings.workwheelEnabled = workwheelEnabled;
     appSettings.workwheelUpcomingDays = workwheelUpcomingDays;
+    appSettings.meetingLookaheadDays = [3, 7, 14, 30].includes(Number(document.getElementById('set-meeting-lookahead-days')?.value)) ? Number(document.getElementById('set-meeting-lookahead-days').value) : 14;
     appSettings.workwheelGridDisplayMode = workwheelGridDisplayMode;
     appSettings.myScheduleLookaheadDays = myScheduleLookaheadDays;
     appSettings.shiftRotationEnabled = document.getElementById('set-shift-rotation-enabled')?.checked === true;
@@ -3270,6 +3324,15 @@ function validatePlannerData(data) {
   };
   const employeeIds = uniqueIds(employeeList, 'employee');
   const activityIds = uniqueIds(activityList, 'activity');
+  const meetingList = Array.isArray(data.meetings) ? data.meetings : [];
+  const meetingIds = new Set();
+  for (const meeting of meetingList) {
+    const meetingId = String(meeting?.id || '').trim();
+    if (!meetingId || meetingIds.has(meetingId) || !isValidIsoDate(meeting.date) || !String(meeting.title || '').trim()) throw new Error('Invalid or duplicate meeting');
+    meetingIds.add(meetingId);
+    if (meeting.participantIds != null && (!Array.isArray(meeting.participantIds) || meeting.participantIds.some(id => !employeeIds.has(Number(id))))) throw new Error('Meeting contains an unknown employee');
+    if (meeting.responsibleId != null && Number(meeting.responsibleId) && !employeeIds.has(Number(meeting.responsibleId))) throw new Error('Meeting has an unknown responsible employee');
+  }
   const statusKeys = new Set();
   statusList.forEach(status => {
     if (!status || typeof status !== 'object' || Array.isArray(status)) throw new Error('Daily status contains invalid data');
@@ -3392,10 +3455,21 @@ let highlightedScheduleEmployeeId = null;
 let gridViewMode = 'all';
 let gridPeriod = 'year';
 let scheduleAnchorDate = todayStr();
+let scheduleSubview = 'activities';
+let meetingsScopeFilter = '';
+let meetingsViewMode = 'month';
+let meetingsMonthAnchor = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`;
+let meetingsSelectedDate = todayStr();
+let meetingsTypeFilter = '';
+let meetingParticipantSelection = new Set();
+let meetingParticipantSearch = '';
+let meetingParticipantFilter = '';
 let appZoom = 100;
 let collapsedGridSections = { activities: false, holidays: false, employees: false };
 
 let employees = [], categories = [], statuses = [], activities = [], courses = [], courseStatuses = {}, requirements = [], requirementRecords = {};
+let meetings = [];
+let meetingTypes = normalizeMeetingTypes([]);
 let departmentOrder = {}, subdepartmentOrder = {}, hierarchyOrder = normalizeHierarchyOrderTree();
 let entriesMap = {}, activityShiftsMap = {}, shiftRotationMap = {}, overtimeMap = {}, cellNotesMap = {}, workScheduleChecksMap = {};
 let rotationDragSelection = null;
@@ -3536,11 +3610,12 @@ function capturePlannerHistoryState() {
   return JSON.parse(JSON.stringify({
     appSettings: { ...appSettings, departmentColors: { ...(appSettings.departmentColors || {}) } },
     employees, departmentOrder, subdepartmentOrder, hierarchyOrder, categories, statuses, activities, courses, courseStatuses, requirements, requirementRecords, entriesMap, activityShiftsMap, shiftRotationMap, overtimeMap, cellNotesMap, workScheduleChecksMap,
+    meetings, meetingTypes,
     nextEmpId, nextActId, nextStatusId, nextCatId,
   }));
 }
 function restorePlannerHistoryState(previous) {
-  ({ appSettings, employees, departmentOrder = {}, subdepartmentOrder = {}, hierarchyOrder = normalizeHierarchyOrderTree(), categories, statuses, activities, courses, courseStatuses, requirements, requirementRecords, entriesMap, activityShiftsMap, shiftRotationMap, overtimeMap, cellNotesMap, workScheduleChecksMap, nextEmpId, nextActId, nextStatusId, nextCatId } = previous);
+  ({ appSettings, employees, departmentOrder = {}, subdepartmentOrder = {}, hierarchyOrder = normalizeHierarchyOrderTree(), categories, statuses, activities, courses, courseStatuses, requirements, requirementRecords, entriesMap, activityShiftsMap, shiftRotationMap, overtimeMap, cellNotesMap, workScheduleChecksMap, meetings = [], meetingTypes = normalizeMeetingTypes([]), nextEmpId, nextActId, nextStatusId, nextCatId } = previous);
   shiftRotationMap ||= {};
   overtimeMap ||= {};
   if (appSettings && typeof appSettings === 'object') Object.assign(appSettings, { ...appSettings, departmentColors: { ...(appSettings.departmentColors || {}) } });
@@ -3785,6 +3860,8 @@ function loadFromData(data) {
     abbr: String(s.abbr || '?').slice(0, 3),
     isAbsence: s.isAbsence === true, isOutOfOffice: s.isOutOfOffice === true,
   }));
+  meetingTypes = normalizeMeetingTypes(normalized.meetingTypes);
+  meetings = normalizeMeetings(normalized.meetings, meetingTypes);
   appSettings.activityTypes = normalizeActivityTypes(normalized.activityTypes.length ? normalized.activityTypes : rawStatuses);
   const maxId = arr => arr.length ? Math.max(...arr.map(x => x.id || 0)) : 0;
   nextEmpId    = Math.max(normalized.nextEmpId    || 1, maxId(employees) + 1);
@@ -3860,7 +3937,7 @@ function snapshotData() {
     shiftTemplates: appSettings.shiftTemplates || [],
     summaryColumns: appSettings.summaryColumns,
     employees, categories, statuses: snapshotStatuses, activities, courses, courseStatuses, requirements, requirementRecords, entriesMap, activityShiftsMap, shiftRotationMap, overtimeMap, cellNotesMap, workScheduleChecksMap,
-      bugTracker: normalizeBugTracker(appSettings.bugTracker),
+    meetings, meetingTypes,
     nextEmpId, nextActId, nextStatusId, nextCatId,
   };
 }
@@ -5228,6 +5305,9 @@ async function loadExampleTestData() {
 function nav(page) {
   if (page === 'shift-rotation' && appSettings.shiftRotationEnabled !== true) page = 'grid';
   if (page === 'workwheel' && appSettings.workwheelEnabled !== true) page = 'grid';
+  if (page === 'meetings' && (!hostedMode || !hostedUser)) page = 'grid';
+  if (page === 'grid') scheduleSubview = 'activities';
+  if (page === 'meetings') scheduleSubview = 'meetings';
   if (page === 'bug-report' && appSettings.bugReportEnabled !== true) page = 'grid';
   if (page === 'inbox' && (!hostedMode || hostedUser?.role !== 'admin')) page = 'grid';
   if (page === 'shift-rotation' && currentPage !== 'shift-rotation') shiftRotationInitialScrollPending = true;
@@ -5240,6 +5320,12 @@ function updateShiftRotationNavigation() {
   document.querySelectorAll('.shift-rotation-nav').forEach(btn => {
     btn.style.display = appSettings.shiftRotationEnabled === true ? '' : 'none';
     btn.classList.toggle('active', currentPage === 'shift-rotation');
+  });
+}
+function updateMeetingsNavigation() {
+  document.querySelectorAll('[data-page="meetings"]').forEach(button => {
+    button.style.display = hostedMode && !!hostedUser ? '' : 'none';
+    button.classList.toggle('active', currentPage === 'meetings');
   });
 }
 function updateWorkwheelNavigation() {
@@ -5268,6 +5354,7 @@ function updateSidebarGroupLabels() {
 function renderPage() {
   renderSbToday();
   updateShiftRotationNavigation();
+  updateMeetingsNavigation();
   updateWorkwheelNavigation();
   updateBugReportNavigation();
   updateSidebarGroupLabels();
@@ -5278,6 +5365,7 @@ function renderPage() {
   }
   else { content.style.cssText = 'flex:1;overflow:auto;padding:24px'; }
   if (currentPage === 'dashboard') renderDashboard();
+  else if (currentPage === 'meetings') renderMeetingsView();
   else if (currentPage === 'employees') renderEmployees();
   else if (currentPage === 'summary') renderSummary();
   else if (currentPage === 'my-upcoming') renderMyUpcoming();
@@ -5730,6 +5818,16 @@ function gridSpanLabelWidth(startIndex, endIndex) {
       : 36;
   return Math.min(420, Math.max(68, spanColumns * columnWidth - 8));
 }
+function setHostedScheduleSubview(value) {
+  scheduleSubview = value === 'meetings' ? 'meetings' : 'activities';
+  if (scheduleSubview === 'meetings') {
+    currentPage = 'meetings';
+    meetingsSelectedDate = todayStr();
+    meetingsMonthAnchor = `${meetingsSelectedDate.slice(0, 7)}-01`;
+  } else currentPage = 'grid';
+  document.querySelectorAll('[data-page="meetings"]').forEach(button => button.classList.toggle('active', currentPage === 'meetings'));
+  renderPage();
+}
 function renderGrid() {
   const range = scheduleRange();
   const activeScope = scheduleScopeParts();
@@ -5795,6 +5893,7 @@ function renderGrid() {
             <option value="timeline" ${gridViewMode === 'timeline' ? 'selected' : ''}>View: Timeline only</option>
             <option value="employees" ${gridViewMode === 'employees' ? 'selected' : ''}>View: Employees only</option>
           </select>
+          <div class="schedule-subview-switch" role="group" aria-label="Schedule content"><button type="button" class="${scheduleSubview === 'activities' ? 'active' : ''}" onclick="setHostedScheduleSubview('activities')">Activities</button><button type="button" class="${scheduleSubview === 'meetings' ? 'active' : ''}" onclick="setHostedScheduleSubview('meetings')">Meetings</button></div>
           ${canHostedCheckOff() ? `<button class="btn btn-sm${showAdminCheckIndicators ? ' btn-primary' : ''}" type="button" onclick="toggleAdminCheckIndicators()" aria-pressed="${showAdminCheckIndicators}" title="Show or hide administrator check-off indicators">${showAdminCheckIndicators ? 'Hide checks' : 'Show checks'}</button>` : ''}
           <select class="plain-select" style="height:32px;padding:5px 9px;max-width:200px" onchange="setScheduleSectionFilter(this.value)" aria-label="Show department or section" title="Filter personnel and activities by explicit organizational scope">
             <option value="">Show: All</option>
@@ -5943,7 +6042,7 @@ function renderGridBody(days, today) {
   const hasAnyActivities = (currentActs.length + pastActs.length) > 0;
 
   // ── Activities section ────────────────────────────────────────
-  if (showTimelineSections) {
+  if (showTimelineSections && scheduleSubview === 'activities') {
     const pageEnd = Math.min(activityPageOffset + activityWindow.pageSize, allVisibleActivities.length);
     const paginateActivities = gridViewMode !== 'timeline' && allVisibleActivities.length > activityWindow.pageSize;
     html += `<tr class="sect-row"><td class="sticky-left schedule-activities-header" style="z-index:60">
@@ -6351,6 +6450,14 @@ function activityCellLabel(activity, spanDays = 1) {
   return compact(name);
 }
 
+function meetingCellEvents(empId, date) {
+  const lookahead = [3, 7, 14, 30].includes(Number(appSettings.meetingLookaheadDays)) ? Number(appSettings.meetingLookaheadDays) : 14;
+  const today = todayStr();
+  if (date < today || date > datePlusDays(today, lookahead - 1)) return [];
+  const occurrenceIds = new Set(meetingsForDate(date).map(meeting => meeting.id));
+  return meetings.filter(meeting => meeting.showInEmployeeGrid !== false && meeting.status !== 'cancelled' && occurrenceIds.has(meeting.id)
+    && (meeting.participantIds.includes(Number(empId)) || Number(meeting.responsibleId) === Number(empId)));
+}
 function buildEmployeeCell(emp, ds, weekend, isToday) {
   const holiday = displayedHolidayFor(ds);
   const entry = getEntryObj(`${emp.id}_${ds}`);
@@ -6361,6 +6468,7 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   const isPlannedStatus = statusEntryIsPlanned(entry);
   const acts = cellActivities(emp.id, ds);
   const workwheelEvents = workwheelCellEvents(emp.id, ds);
+  const meetingEvents = meetingCellEvents(emp.id, ds);
   const pendingAbsenceRequest = hostedMode && hostedUser?.role === 'admin' && typeof hostedPendingAbsenceRequests !== 'undefined'
     ? hostedPendingAbsenceRequests.find(request => Number(request.employeeId) === Number(emp.id) && ds >= request.startDate && ds <= request.endDate)
     : null;
@@ -6402,11 +6510,13 @@ function buildEmployeeCell(emp, ds, weekend, isToday) {
   if (cellNote) tipParts.push(`Note: ${cellNote}`);
   if (birthday) tipParts.push(`Birthday: ${emp.name}${birthdayAge !== null ? ` · turns ${birthdayAge}` : ''}`);
   workwheelEvents.forEach(event => tipParts.push(`Workwheel: ${event.title}${event.startTime && event.endTime ? `\nTime: ${event.startTime}–${event.endTime}` : '\nAll day'}`));
+  meetingEvents.forEach(meeting => tipParts.push(`Meeting: ${meeting.title}${meeting.startTime && meeting.endTime ? `\nTime: ${meeting.startTime}–${meeting.endTime}` : '\nAll day'}${meeting.location ? `\nLocation: ${meeting.location}` : ''}`));
   if (!tipParts.length) tipParts.push('Click to set status');
 
   const primaryActivity = rotationMeta ? null : acts[0];
   const entryWorkCode = entry?.workCodeId ? (appSettings.workCodes || []).find(code => code.id === entry.workCodeId) : null;
   let workwheelMarker = workwheelEvents.length ? `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(workwheelEvents[0].color || '#3b82f6')}" title="${esc(workwheelEvents.map(event => event.title).join('\n'))}">◉${workwheelEvents.length > 1 ? `<small>${workwheelEvents.length}</small>` : ''}</span>` : '';
+  if (meetingEvents.length) workwheelMarker += `<span class="workwheel-cell-marker" style="--workwheel-color:${esc(meetingTypes.find(type => type.id === meetingEvents[0].typeId)?.color || meetingEvents[0].color || '#2563eb')}" title="${esc(meetingEvents.map(meeting => meeting.title).join('\n'))}">M${meetingEvents.length > 1 ? `<small>${meetingEvents.length}</small>` : ''}</span>`;
   const checkedActivity = bossSessionActive ? participantActivitiesForDate(emp.id, ds).find(act => isBossCheckSet(emp.id, ds, 'activity', act.id)) : null;
   const checkedStatus = bossSessionActive && si && isBossCheckSet(emp.id, ds, 'status', si.key) ? si : null;
   const activitySpanDays = primaryActivity ? Math.max(1, Math.round((new Date(`${primaryActivity.endDate}T00:00:00`) - new Date(`${primaryActivity.startDate}T00:00:00`)) / 86400000) + 1) : 1;
@@ -7683,6 +7793,197 @@ function selectFilteredActivityParticipants() {
 function clearActivityParticipants() {
   selectedParticipants = [];
   buildParticipantPicker();
+}
+function datePlusDays(date, amount) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + amount);
+  return fmt(value);
+}
+function meetingsForDate(date) {
+  return meetings.filter(meeting => {
+    if (meeting.status === 'cancelled' || date < meeting.date || (meeting.endDate && date > meeting.endDate)) return false;
+    if (meeting.recurrence === 'none') return date <= (meeting.endDate || meeting.date);
+    const cursor = new Date(`${date}T00:00:00`);
+    const start = new Date(`${meeting.date}T00:00:00`);
+    const elapsed = Math.round((cursor - start) / 86400000);
+    if (meeting.recurrence === 'daily') return true;
+    if (meeting.recurrence === 'weekly') return elapsed >= 0 && cursor.getDay() === meeting.weekday && elapsed % 7 === 0;
+    if (meeting.recurrence === 'fortnightly') return elapsed >= 0 && cursor.getDay() === meeting.weekday && elapsed % 14 === 0;
+    if (meeting.recurrence === 'monthly') return cursor.getDate() === start.getDate();
+    return false;
+  }).sort((left, right) => (left.startTime || '').localeCompare(right.startTime || '') || left.title.localeCompare(right.title));
+}
+function meetingsWeekDates(referenceDate) {
+  const start = new Date(`${referenceDate}T00:00:00`);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return Array.from({ length: 7 }, (_, index) => { const date = new Date(start); date.setDate(start.getDate() + index); return fmt(date); });
+}
+function shiftHostedMeetingsPeriod(delta) {
+  if (meetingsViewMode === 'week') {
+    const date = new Date(`${meetingsSelectedDate}T00:00:00`);
+    date.setDate(date.getDate() + delta * 7);
+    meetingsSelectedDate = fmt(date);
+  } else {
+    const date = new Date(`${meetingsMonthAnchor}T00:00:00`);
+    date.setMonth(date.getMonth() + delta, 1);
+    meetingsMonthAnchor = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
+  }
+  renderPage();
+}
+function setHostedMeetingsMode(mode) {
+  meetingsViewMode = mode === 'week' ? 'week' : 'month';
+  if (meetingsViewMode === 'month') meetingsMonthAnchor = `${meetingsSelectedDate.slice(0, 7)}-01`;
+  renderPage();
+}
+function selectHostedMeetingDate(date) {
+  if (!isValidIsoDate(date)) return;
+  meetingsSelectedDate = date;
+  meetingsMonthAnchor = `${date.slice(0, 7)}-01`;
+  renderPage();
+}
+function setHostedMeetingTypeFilter(value) {
+  meetingsTypeFilter = String(value || '');
+  renderPage();
+}
+function renderMeetingsView() {
+  document.getElementById('content').style.cssText = 'flex:1;overflow:auto;padding:24px';
+  meetingsScopeFilter = validateMeetingsViewScopeFilter(meetingsScopeFilter);
+  const weekDates = meetingsWeekDates(meetingsSelectedDate);
+  const monthStart = new Date(`${meetingsMonthAnchor}T00:00:00`);
+  const monthFirst = new Date(monthStart.getFullYear(), monthStart.getMonth(), 1);
+  monthFirst.setDate(1 - ((monthFirst.getDay() + 6) % 7));
+  const monthDates = Array.from({ length: 42 }, (_, index) => { const date = new Date(monthFirst); date.setDate(monthFirst.getDate() + index); return fmt(date); });
+  const dates = meetingsViewMode === 'week' ? weekDates : monthDates;
+  const scope = meetingsViewScopeParts();
+  const inScope = meeting => meeting.status !== 'cancelled' && (meeting.participantIds.length || meeting.responsibleId || meeting.externalAttendees) && meetingMatchesScope(meeting, scope);
+  const byDate = new Map(dates.map(date => [date, meetingsForDate(date).filter(inScope)]));
+  const selectedMeetings = meetingsForDate(meetingsSelectedDate).filter(inScope).filter(meeting => !meetingsTypeFilter || meeting.typeId === meetingsTypeFilter);
+  const typeOptions = meetingTypes.map(type => `<option value="${esc(type.id)}" ${meetingsTypeFilter === type.id ? 'selected' : ''}>${esc(type.name)}</option>`).join('');
+  const departments = [...new Set(employees.map(employee => String(employee.department || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const sections = [...new Set(employees.map(employeeSection).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayCells = dates.map(date => {
+    const items = byDate.get(date) || [];
+    const inMonth = meetingsViewMode === 'week' || date.slice(0, 7) === meetingsMonthAnchor.slice(0, 7);
+    const dots = items.slice(0, 4).map(item => `<i style="--meeting-color:${esc(meetingTypes.find(type => type.id === item.typeId)?.color || item.color)}"></i>`).join('');
+    const weekend = [0, 6].includes(new Date(`${date}T00:00:00`).getDay());
+    return `<button type="button" class="meeting-day${inMonth ? '' : ' outside-month'}${weekend ? ' weekend' : ''}${date === meetingsSelectedDate ? ' selected' : ''}${date === todayStr() ? ' today' : ''}" onclick="selectHostedMeetingDate('${date}')"><span>${Number(date.slice(8, 10))}</span>${items.length ? `<small>${items.length} meeting${items.length === 1 ? '' : 's'}</small><span class="meeting-dots">${dots}</span>` : ''}</button>`;
+  }).join('');
+  const agenda = selectedMeetings.map(meeting => {
+    const type = meetingTypes.find(item => item.id === meeting.typeId);
+    const responsible = employees.find(item => Number(item.id) === Number(meeting.responsibleId));
+    const names = meeting.participantIds.map(id => employees.find(item => Number(item.id) === Number(id))?.name).filter(Boolean);
+    return `<button type="button" class="meeting-agenda-item status-${esc(meeting.status)}" style="--meeting-color:${esc(type?.color || meeting.color)}" onclick="openMeetingEditor('${esc(meeting.id)}')"><span class="meeting-time">${meeting.allDay ? 'All day' : `${esc(meeting.startTime || 'Time not set')}${meeting.endTime ? `–${esc(meeting.endTime)}` : ''}`}</span><span class="meeting-summary"><strong>${esc(meeting.title)}</strong><small>${esc(type?.name || 'Meeting')} · ${esc(meeting.status)}${meeting.location ? ` · ${esc(meeting.location)}` : ''}</small>${names.length ? `<small>Participants: ${names.map(esc).join(', ')}</small>` : ''}${responsible ? `<small>Responsible: ${esc(responsible.name)}</small>` : ''}</span></button>`;
+  }).join('');
+  document.getElementById('content').innerHTML = `<div class="meetings-view"><header class="meetings-header"><div><div class="eyebrow">SCHEDULE / MEETINGS</div><h1 class="page-title">Meetings</h1><p class="page-sub">Meetings are managed separately from activity planning.</p><div class="schedule-subview-switch"><button type="button" class="${scheduleSubview === 'activities' ? 'active' : ''}" onclick="setHostedScheduleSubview('activities')">Activities</button><button type="button" class="active" onclick="setHostedScheduleSubview('meetings')">Meetings</button></div></div><div class="meetings-actions"><div class="meetings-view-mode"><button class="btn btn-sm${meetingsViewMode === 'week' ? ' btn-primary' : ''}" onclick="setHostedMeetingsMode('week')">This week</button><button class="btn btn-sm${meetingsViewMode === 'month' ? ' btn-primary' : ''}" onclick="setHostedMeetingsMode('month')">Month</button></div><label class="meetings-scope-filter">Show meetings for <select class="plain-select" onchange="meetingsScopeFilter=this.value;renderPage()"><option value="">Everyone</option><optgroup label="Departments">${departments.map(value => `<option value="${esc(scheduleScopeValue('department', value))}" ${meetingsScopeFilter === scheduleScopeValue('department', value) ? 'selected' : ''}>${esc(value)}</option>`).join('')}</optgroup><optgroup label="Sections">${sections.map(value => `<option value="${esc(scheduleScopeValue('section', value))}" ${meetingsScopeFilter === scheduleScopeValue('section', value) ? 'selected' : ''}>${esc(value)}</option>`).join('')}</optgroup></select></label><button class="btn btn-sm" onclick="shiftHostedMeetingsPeriod(-1)" aria-label="Previous">‹</button><strong>${meetingsViewMode === 'week' ? `Week ${isoWeek(new Date(`${dates[0]}T00:00:00`))}` : monthStart.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}</strong><button class="btn btn-sm" onclick="shiftHostedMeetingsPeriod(1)" aria-label="Next">›</button><button class="btn btn-sm" onclick="meetingsSelectedDate=todayStr();meetingsMonthAnchor=todayStr().slice(0,7)+'-01';renderPage()">Today</button><button class="btn btn-primary" onclick="openMeetingEditor()">Add meeting</button></div></header><div class="meetings-layout"><section class="meetings-calendar card"><div class="meetings-weekdays">${weekdays.map((day, index) => `<span class="${index > 4 ? 'weekend' : ''}">${day}</span>`).join('')}</div><div class="meetings-month-grid${meetingsViewMode === 'week' ? ' week-view' : ''}">${dayCells}</div></section><aside class="meetings-agenda card"><div class="meetings-agenda-heading"><div><span class="eyebrow">DAY AGENDA</span><h2>${new Date(`${meetingsSelectedDate}T00:00:00`).toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</h2></div><label>Type <select class="plain-select" onchange="setHostedMeetingTypeFilter(this.value)"><option value="">All types</option>${typeOptions}</select></label></div><div class="meeting-agenda-list">${agenda || '<div class="meetings-empty"><strong>No meetings on this date</strong><span>Select another date or add a meeting.</span></div>'}</div><div class="meeting-types-note"><strong>Meeting types</strong><span>${meetingTypes.map(type => `<i style="--meeting-color:${esc(type.color)}"></i>${esc(type.name)}`).join(' · ')}</span><button type="button" class="btn btn-sm" onclick="manageMeetingTypes()">Manage types</button></div></aside></div></div>`;
+}
+function updateMeetingTypeColorPreview() {
+  const type = meetingTypes.find(item => item.id === document.getElementById('meeting-type')?.value);
+  const preview = document.getElementById('meeting-type-color-preview');
+  if (preview) preview.innerHTML = type ? `<span class="meeting-type-color-swatch" style="--meeting-color:${esc(type.color)}"></span><b>${esc(type.name)}</b>` : '';
+}
+function openMeetingEditor(id = '') {
+  if (!['admin', 'planner'].includes(hostedUser?.role)) { showToast('You do not have permission to edit meetings.', 3500); return; }
+  const meeting = meetings.find(item => item.id === String(id));
+  document.getElementById('meeting-id').value = meeting?.id || '';
+  document.getElementById('meeting-modal-title').textContent = meeting ? 'Edit meeting series' : 'Add meeting';
+  document.getElementById('meeting-title').value = meeting?.title || '';
+  document.getElementById('meeting-type').innerHTML = meetingTypes.map(type => `<option value="${esc(type.id)}">${esc(type.name)}</option>`).join('');
+  document.getElementById('meeting-type').value = meeting?.typeId || meetingTypes[0]?.id || '';
+  document.getElementById('meeting-status').value = meeting?.status || 'planned';
+  document.getElementById('meeting-show-in-grid').checked = meeting?.showInEmployeeGrid !== false;
+  document.getElementById('meeting-date').value = meeting?.date || meetingsSelectedDate;
+  document.getElementById('meeting-end-date').value = meeting?.endDate || '';
+  document.getElementById('meeting-start-time').value = meeting?.startTime || '';
+  document.getElementById('meeting-end-time').value = meeting?.endTime || '';
+  document.getElementById('meeting-location').value = meeting?.location || '';
+  document.getElementById('meeting-recurrence').value = meeting?.recurrence || 'none';
+  document.getElementById('meeting-responsible').innerHTML = `<option value="">Unassigned</option>${[...employees].sort(comparePersonnelHierarchy).map(employee => `<option value="${employee.id}">${esc(employee.name)} · ${esc([employee.department, employeeSection(employee), employee.process, employee.team].filter(Boolean).join(' / '))}</option>`).join('')}`;
+  document.getElementById('meeting-responsible').value = meeting?.responsibleId || '';
+  meetingParticipantSelection = new Set(meeting?.participantIds || []);
+  meetingParticipantFilter = '';
+  meetingParticipantSearch = '';
+  for (const field of ['department', 'section', 'process', 'team']) meetingParticipantHierarchyFilters[field] = '';
+  renderMeetingParticipants();
+  document.getElementById('meeting-external-attendees').value = meeting?.externalAttendees || '';
+  document.getElementById('meeting-notes').value = meeting?.notes || '';
+  document.getElementById('meeting-delete').style.display = meeting ? '' : 'none';
+  document.getElementById('meeting-modal').classList.add('open');
+  updateMeetingTypeColorPreview();
+}
+function renderMeetingParticipants() {
+  const container = document.getElementById('meeting-participants');
+  if (!container) return;
+  meetingParticipantHierarchyFilters.search = meetingParticipantSearch;
+  const visible = employees.filter(employee => (!meetingParticipantFilter || String(employee.department || '').trim() === meetingParticipantFilter) && personnelPickerMatches(employee, meetingParticipantHierarchyFilters)).sort(comparePersonnelHierarchy);
+  const grouped = new Map();
+  visible.forEach(employee => {
+    const department = String(employee.department || '').trim() || 'Unassigned department';
+    const section = employeeSection(employee) || 'Direct personnel';
+    const key = `${department}\u0000${section}`;
+    if (!grouped.has(key)) grouped.set(key, { department, section, people: [] });
+    grouped.get(key).people.push(employee);
+  });
+  const filters = ['department', 'section', 'process', 'team'].map(field => `<label>${field[0].toUpperCase()}${field.slice(1)}<select id="meeting-hierarchy-${field}" class="plain-select" onchange="setMeetingHierarchyFilter('${field}',this.value)"></select></label>`).join('');
+  container.innerHTML = `<div class="meeting-participant-toolbar"><label>Search<input type="search" value="${esc(meetingParticipantSearch)}" oninput="searchMeetingParticipants(this.value)"></label>${filters}<button type="button" class="btn btn-sm" onclick="setVisibleMeetingParticipants(true)">Select shown</button><button type="button" class="btn btn-sm" onclick="setVisibleMeetingParticipants(false)">Clear shown</button></div><div class="meeting-participant-summary">${meetingParticipantSelection.size} selected · ${visible.length} shown</div>${[...grouped.values()].map(group=>`<section class="meeting-participant-group"><strong>${esc(group.department)} · ${esc(group.section)}</strong>${group.people.map(employee=>`<label><input type="checkbox" value="${employee.id}" ${meetingParticipantSelection.has(Number(employee.id))?'checked':''} onchange="toggleMeetingParticipant(${employee.id},this.checked)"><span>${esc(employee.name)}</span></label>`).join('')}</section>`).join('')}`;
+  populatePersonnelPickerFilters('meeting-hierarchy', employees, meetingParticipantHierarchyFilters);
+}
+async function saveMeeting() {
+  const id = document.getElementById('meeting-id').value;
+  const title = document.getElementById('meeting-title').value.trim();
+  const date = document.getElementById('meeting-date').value;
+  const endDate = document.getElementById('meeting-end-date').value || date;
+  const recurrence = document.getElementById('meeting-recurrence').value;
+  const startTime = document.getElementById('meeting-start-time').value;
+  const endTime = document.getElementById('meeting-end-time').value;
+  if (!title || !isValidIsoDate(date) || !isValidIsoDate(endDate) || endDate < date || (startTime && !endTime) || (!startTime && endTime) || (startTime && endDate === date && endTime <= startTime)) { alert('Enter a title and valid meeting dates and times.'); return; }
+  const selectedTypeId = document.getElementById('meeting-type').value;
+  const record = { id: id || `meeting-${globalThis.crypto?.randomUUID?.() || `hosted-${Date.now()}-${Math.random().toString(16).slice(2)}`}`, title, typeId: selectedTypeId, date, endDate: endDate > date ? endDate : '', startTime, endTime, allDay: !startTime, location: document.getElementById('meeting-location').value.trim(), recurrence, status: document.getElementById('meeting-status').value, showInEmployeeGrid: document.getElementById('meeting-show-in-grid').checked, responsibleId: Number(document.getElementById('meeting-responsible').value) || null, participantIds: [...meetingParticipantSelection].filter(id => employees.some(employee => Number(employee.id) === Number(id))), externalAttendees: document.getElementById('meeting-external-attendees').value.trim(), notes: document.getElementById('meeting-notes').value.trim(), weekday: new Date(`${date}T00:00:00`).getDay(), color: meetingTypes.find(type => type.id === selectedTypeId)?.color || '#2563eb' };
+  const saved = await mutateState('saveMeeting', () => { meetings = id ? meetings.map(item => item.id === id ? record : item) : [...meetings, record]; });
+  if (saved) { meetingsSelectedDate = date; meetingsMonthAnchor = `${date.slice(0,7)}-01`; closeModal('meeting-modal'); renderPage(); }
+}
+async function deleteMeetingFromEditor() {
+  const id = document.getElementById('meeting-id').value;
+  const meeting = meetings.find(item => item.id === id);
+  if (!meeting || !confirm(`Delete ${meeting.recurrence === 'none' ? 'meeting' : 'recurring series'} “${meeting.title}”?`)) return;
+  await mutateState('deleteMeeting', () => { meetings = meetings.filter(item => item.id !== id); });
+  closeModal('meeting-modal'); renderPage();
+}
+function setMeetingHierarchyFilter(field, value) {
+  if (!['department', 'section', 'process', 'team'].includes(field)) return;
+  meetingParticipantHierarchyFilters[field] = String(value || '');
+  renderMeetingParticipants();
+}
+function setMeetingParticipantFilter(value) {
+  meetingParticipantFilter = String(value || '');
+  for (const field of ['department', 'section', 'process', 'team']) meetingParticipantHierarchyFilters[field] = '';
+  renderMeetingParticipants();
+}
+function searchMeetingParticipants(value) {
+  meetingParticipantSearch = String(value || '');
+  renderMeetingParticipants();
+  const input = document.querySelector('#meeting-participants input[type="search"]');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+function setVisibleMeetingParticipants(checked) {
+  const ids = [...document.querySelectorAll('#meeting-participants input[type="checkbox"]')].map(input => Number(input.value));
+  ids.forEach(id => checked ? meetingParticipantSelection.add(id) : meetingParticipantSelection.delete(id));
+  renderMeetingParticipants();
+}
+function toggleMeetingParticipant(id, checked) {
+  const employeeId = Number(id);
+  if (checked) meetingParticipantSelection.add(employeeId);
+  else meetingParticipantSelection.delete(employeeId);
+  renderMeetingParticipants();
+}
+async function manageMeetingTypes() {
+  if (!['admin', 'planner'].includes(hostedUser?.role)) { showToast('You do not have permission to manage meeting types.', 3500); return; }
+  const text = prompt('Meeting types — one per line: id|name|#hex-color', meetingTypes.map(type => `${type.id}|${type.name}|${type.color}`).join('\n'));
+  if (text === null) return;
+  const parsed = text.split(/\r?\n/).map((line, index) => { const [id, name, color] = line.split('|'); return name?.trim() ? { id: String(id || `meeting-${index}`).trim(), name: name.trim(), color: normalizeHexColor(color, '#64748b') } : null; }).filter(Boolean);
+  if (!parsed.length || new Set(parsed.map(type => type.id)).size !== parsed.length) { alert('Meeting types need unique IDs and nonempty names.'); return; }
+  await mutateState('manageMeetingTypes', () => { meetingTypes = normalizeMeetingTypes(parsed); meetings = meetings.map(meeting => ({ ...meeting, color: meetingTypes.find(type => type.id === meeting.typeId)?.color || meeting.color })); });
+  renderPage();
 }
 function openActModal(id) {
   editingActId = id === undefined || id === null || id === '' ? null : Number(id);
@@ -9870,12 +10171,12 @@ function renderDashboard() {
     if (entry && counts[entry.status] !== undefined) counts[entry.status]++;
     const status = entry ? siFor(entry.status) : null;
     const unavailableActivity = unavailableActivityFor(emp.id, today);
-    const statusUnavailable = status && !statusEntryIsPlanned(entry) && (status.isAbsence || status.isOutOfOffice);
+    const statusUnavailable = status && !statusEntryIsPlanned(entry) && entry.durationType !== 'time' && (status.isAbsence || status.isOutOfOffice);
     const isPartial = entry?.durationType === 'time';
     const partialHours = isPartial && entry?.time ? (timeRangeHours(entry.time) ?? 0) : 0;
     const coreHours = appSettings.coreHoursPerDay || 7.5;
     if (!statusUnavailable && !unavailableActivity) {
-      availableToday += isPartial ? 0 : 1;
+      availableToday++;
     }
     if (statusUnavailable) {
       unavailableTodayPeople.push({ name: emp.name, status: isPartial ? `${status.label} (${partialHours}h)` : status.label });
@@ -9886,7 +10187,7 @@ function renderDashboard() {
     }
     if ((statusUnavailable && status.isOutOfOffice) || (!statusUnavailable && unavailableActivity)) oooToday++;
     if (statusUnavailable && status.isAbsence) {
-      absentToday += isPartial ? 0 : 1;
+      absentToday++;
     }
   }
   const unavailableTodayInline = unavailableTodayPeople.length
@@ -9907,7 +10208,7 @@ function renderDashboard() {
     for (const emp of dashboardEmployees) {
       const entry = getEntryObj(`${emp.id}_${ds}`);
       const status = entry ? siFor(entry.status) : null;
-      const statusAffectsAvailability = !!status && !statusEntryIsPlanned(entry) && (status.isAbsence || status.isOutOfOffice);
+      const statusAffectsAvailability = !!status && !statusEntryIsPlanned(entry) && entry.durationType !== 'time' && (status.isAbsence || status.isOutOfOffice);
       if (status && !statusEntryIsPlanned(entry) && dayCounts[entry.status] !== undefined) dayCounts[entry.status]++;
       if (statusAffectsAvailability) {
         unavailableStatusCount++;

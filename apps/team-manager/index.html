@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ATLAS — Adaptive Timeline, Load &amp; Allocation System</title>
-<link rel="stylesheet" href="css/styles.css?v=41">
+<link rel="stylesheet" href="css/styles.css?v=42">
 <style>
 #atlas-auth-screen{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:var(--bg,#f4f6fb);color:var(--text,#1f2937);padding:24px}
 .atlas-auth-card{width:min(420px,100%);padding:32px;border:1px solid var(--border,#cfd8e3);border-radius:16px;background:var(--surface,#fff);box-shadow:0 20px 60px #0003}.atlas-auth-brand{font-weight:800;letter-spacing:.18em;color:var(--primary,#334155)}.atlas-auth-card h1{margin:12px 0 8px;color:var(--text,#1f2937)}.atlas-auth-message{color:var(--muted,#4b5563);line-height:1.5}.atlas-auth-card label{display:grid;gap:6px;margin:16px 0;font-weight:600;color:var(--text,#1f2937)}.atlas-auth-card input{box-sizing:border-box;width:100%;padding:11px;border:1px solid var(--border,#cfd8e3);border-radius:8px;background:var(--surface,#fff);color:var(--text,#1f2937)}.atlas-auth-card small{color:var(--muted,#4b5563);font-weight:400}.atlas-auth-card button{width:100%;padding:12px;border:0;border-radius:8px;background:var(--primary,#334155);color:var(--primary-fg,#fff);font-weight:700;cursor:pointer}.atlas-auth-card button:disabled{opacity:.6;cursor:wait}.atlas-auth-card #atlas-auth-error{min-height:1.4em;color:#b91c1c;margin-bottom:8px}
@@ -30,6 +30,7 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
   <nav id="sb-nav" aria-label="Main navigation">
     <div class="sb-section-label" data-nav-group-label>Workforce</div>
     <button class="nav-btn" data-page="grid" onclick="nav('grid')" aria-label="Schedule"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><span class="sidebar-item-label">Schedule</span></button>
+    <button class="nav-btn" id="hosted-meetings-nav" data-page="meetings" onclick="nav('meetings')" aria-label="Meetings" style="display:none"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h3m-3 3h6"/></svg><span class="sidebar-item-label">Meetings</span></button>
     <button class="nav-btn" data-page="dashboard" onclick="nav('dashboard')" aria-label="Dashboard"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z"/></svg><span class="sidebar-item-label">Dashboard</span></button>
     <button class="nav-btn" data-page="employees" onclick="nav('employees')" aria-label="Personnel"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="sidebar-item-label">Personnel</span></button>
     <button class="nav-btn" data-page="summary" onclick="nav('summary')" aria-label="Summary"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 20V10M12 20V4M6 20v-6"/></svg><span class="sidebar-item-label">Summary</span></button>
@@ -411,6 +412,23 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
   </div>
 </div>
 
+<div class="modal-bg" id="meeting-modal">
+  <div class="modal meeting-modal" style="width:min(900px,calc(100vw - 32px));max-height:94vh;overflow:auto">
+    <h3 id="meeting-modal-title">Add meeting</h3><input id="meeting-id" type="hidden">
+    <div class="form-row"><label for="meeting-title">Title *</label><input id="meeting-title" maxlength="120" placeholder="Operations briefing"></div>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label for="meeting-type">Type</label><select id="meeting-type" class="plain-select" onchange="updateMeetingTypeColorPreview()"></select></div><div class="form-row" style="margin:0"><label for="meeting-status">Status</label><select id="meeting-status" class="plain-select"><option value="planned">Planned</option><option value="confirmed">Confirmed</option><option value="cancelled">Cancelled</option></select></div></div>
+    <div id="meeting-type-color-preview" class="meeting-type-color-preview"></div>
+    <label style="display:flex;align-items:center;gap:7px;margin:8px 0 14px;font-size:12px;cursor:pointer"><input id="meeting-show-in-grid" type="checkbox" checked> Show dots in personnel grid</label>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label for="meeting-date">Date</label><input id="meeting-date" type="date"></div><div class="form-row" style="margin:0"><label for="meeting-end-date">End date (optional)</label><input id="meeting-end-date" type="date"></div></div>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label for="meeting-start-time">Start time</label><input id="meeting-start-time" type="time"></div><div class="form-row" style="margin:0"><label for="meeting-end-time">End time</label><input id="meeting-end-time" type="time"></div></div>
+    <div class="form-row-2"><div class="form-row" style="margin:0"><label for="meeting-location">Location</label><input id="meeting-location" maxlength="160" placeholder="Room / link"></div><div class="form-row" style="margin:0"><label for="meeting-recurrence">Recurrence</label><select id="meeting-recurrence" class="plain-select"><option value="none">None</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="fortnightly">Every 14 days</option><option value="monthly">Monthly</option></select></div></div>
+    <div class="form-row"><label for="meeting-responsible">Responsible person</label><select id="meeting-responsible" class="plain-select"></select></div>
+    <div class="form-row"><label>Internal participants</label><div id="meeting-participants" class="meeting-participants"></div></div>
+    <div class="form-row"><label for="meeting-external-attendees">External attendees</label><input id="meeting-external-attendees" maxlength="500" placeholder="Names or organizations"></div>
+    <div class="form-row"><label for="meeting-notes">Notes</label><textarea id="meeting-notes" rows="3" maxlength="1000"></textarea></div>
+    <div class="modal-actions"><button class="btn btn-danger" id="meeting-delete" type="button" style="margin-right:auto;display:none" onclick="deleteMeetingFromEditor()">Delete series</button><button class="btn" type="button" onclick="closeModal('meeting-modal')">Cancel</button><button class="btn btn-primary" type="button" onclick="saveMeeting()">Save meeting</button></div>
+  </div>
+</div>
 <div class="modal-bg" id="workwheel-create-modal">
   <div class="modal" style="width:420px">
     <h3>Create Workwheel</h3>
@@ -464,7 +482,7 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
         <button class="settings-tab hosted-admin-only" id="settings-tab-access" type="button" role="tab" aria-controls="settings-pane-access" aria-selected="false" tabindex="-1" onclick="switchSettingsTab('access')"><span aria-hidden="true">♙</span>Access &amp; Accounts</button>
         <button class="settings-tab hosted-admin-only" id="settings-tab-privacy" type="button" role="tab" aria-controls="settings-pane-privacy" aria-selected="false" tabindex="-1" onclick="switchSettingsTab('privacy')"><span aria-hidden="true">⚙</span>Privacy, Audit &amp; Data</button>
       </div>
-      <div class="settings-nav-foot"><span class="settings-live-dot"></span>Local ATLAS planner</div>
+      <div class="settings-nav-foot"><span class="settings-live-dot"></span>Hosted ATLAS planner</div>
     </aside>
     <div class="settings-main">
       <div class="settings-content" id="settings-content">
@@ -509,6 +527,7 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
         <section class="settings-tab-pane" id="settings-pane-workwheel" role="tabpanel" aria-labelledby="settings-tab-workwheel" tabindex="0" hidden>
           <header class="settings-pane-heading"><div><span class="settings-kicker">TEAM ACTIVITY</span><h3>Workwheel</h3><p>Configure shared activity calendars and schedule markers.</p></div></header>
           <div class="form-row"><label class="settings-check"><input id="set-workwheel-enabled" type="checkbox"> Enable Workwheel</label><div class="form-hint">Experimental section activity wheels. Data is kept with the planner.</div></div>
+          <div class="form-row"><label for="set-meeting-lookahead-days">Meeting markers lookahead</label><select id="set-meeting-lookahead-days" class="plain-select"><option value="3">Next 3 days</option><option value="7">Next 7 days</option><option value="14">Next 14 days</option><option value="30">Next 30 days</option></select><div class="form-hint">Controls how far ahead meeting markers appear in personnel cells.</div></div>
           <div class="workwheel-settings-grid"><label class="workwheel-setting-field"><span>Upcoming window (days)</span><input id="set-workwheel-upcoming-days" type="number" min="1" max="365" step="1"><small>Upcoming activity panel range.</small></label><label class="workwheel-setting-field"><span>My schedule lookahead (days)</span><input id="set-my-schedule-lookahead-days" type="number" min="1" max="365" step="1" value="31"><small>Default: one month.</small></label><label class="workwheel-setting-field"><span>Schedule display</span><select id="set-workwheel-grid-display" class="plain-select"><option value="cells">Employee cells only</option><option value="both">Activity row and employee cells</option><option value="row">Activity row only</option><option value="none">Hidden</option></select><small>Where Workwheel events appear in Schedule.</small></label><div class="workwheel-setting-action"><button class="btn" type="button" onclick="openWorkwheelFileSettings()">Workwheel data file</button></div></div>
         </section>
 
@@ -601,6 +620,6 @@ body.dark .atlas-auth-card select{background:var(--bg,#0f1724);color:var(--text,
   </div>
 </div>
 <script src="app/workwheel.js?v=10"></script>
-<script src="app/app.js?v=70"></script>
+<script src="app/app.js?v=71"></script>
 </body>
 </html>

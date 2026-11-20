@@ -53,6 +53,27 @@ export interface DailyEntry {
   readonly workCodeId?: string | null;
 }
 
+export interface PlannerMeeting {
+  readonly id: string;
+  readonly title: string;
+  readonly typeId: string;
+  readonly date: LocalDate;
+  readonly endDate: LocalDate | '';
+  readonly startTime: string;
+  readonly endTime: string;
+  readonly allDay: boolean;
+  readonly location: string;
+  readonly notes: string;
+  readonly status: 'planned' | 'confirmed' | 'cancelled';
+  readonly showInEmployeeGrid: boolean;
+  readonly participantIds: readonly number[];
+  readonly responsibleId: number | null;
+  readonly externalAttendees: string;
+  readonly recurrence: 'none' | 'daily' | 'weekly' | 'fortnightly' | 'monthly';
+  readonly weekday: number;
+  readonly color: string;
+}
+
 export interface PlannerDocument {
   readonly appVersion: string;
   readonly dataVersion: number;
@@ -64,6 +85,8 @@ export interface PlannerDocument {
   readonly categories: readonly Readonly<Record<string, unknown>>[];
   readonly statuses: readonly DailyStatusDefinition[];
   readonly activities: readonly PlannerActivity[];
+  readonly meetings: readonly PlannerMeeting[];
+  readonly meetingTypes: readonly { readonly id: string; readonly name: string; readonly color: string }[];
   readonly entriesMap: Readonly<Record<string, DailyEntry | string | null>>;
   readonly [key: string]: unknown;
 }
@@ -85,6 +108,13 @@ export function createBlankPlannerDocument(now = new Date().toISOString()): Plan
     categories: [],
     statuses: [],
     activities: [],
+    meetings: [],
+    meetingTypes: [
+      { id: 'meeting', name: 'Meeting', color: '#2563eb' },
+      { id: 'briefing', name: 'Briefing', color: '#0f766e' },
+      { id: 'orientation', name: 'Orientation', color: '#7c3aed' },
+      { id: 'other', name: 'Other', color: '#64748b' },
+    ],
     entriesMap: {},
     activityShiftsMap: {},
     shiftRotationMap: {},
@@ -102,11 +132,63 @@ export function createBlankPlannerDocument(now = new Date().toISOString()): Plan
   };
 }
 
+function normalizeMeetings(value: unknown, typeDefinitions: Array<{ id: string; name: string; color: string }>): PlannerMeeting[] {
+  if (!Array.isArray(value)) return [];
+  const types = new Map(typeDefinitions.map(type => [type.id, type.color]));
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const item = isRecord(entry) ? entry : {};
+    const id = String(item.id ?? `meeting-${index + 1}`).trim().slice(0, 80);
+    const title = String(item.title ?? '').trim().slice(0, 120);
+    const date = String(item.date ?? '');
+    const recurrence = ['none', 'daily', 'weekly', 'fortnightly', 'monthly'].includes(String(item.recurrence)) ? String(item.recurrence) as PlannerMeeting['recurrence'] : 'none';
+    if (!id || !title || !validDate(date) || seen.has(id)) return null;
+    seen.add(id);
+    const rawAttendees = item.externalAttendees ?? item.attendees;
+    return {
+      id, title, typeId: String(item.typeId ?? 'meeting').slice(0, 64), date,
+      endDate: recurrence === 'none' ? (validDate(item.endDate) && String(item.endDate) >= date ? String(item.endDate) : date) : (validDate(item.endDate) && String(item.endDate) > date ? String(item.endDate) : ''),
+      startTime: String(item.startTime ?? '').slice(0, 5), endTime: String(item.endTime ?? '').slice(0, 5),
+      allDay: item.allDay === true, location: String(item.location ?? '').trim().slice(0, 160), notes: String(item.notes ?? '').trim().slice(0, 1000),
+      status: ['planned', 'confirmed', 'cancelled'].includes(String(item.status)) ? String(item.status) as PlannerMeeting['status'] : 'planned',
+      showInEmployeeGrid: item.showInEmployeeGrid !== false,
+      participantIds: Array.isArray(item.participantIds) ? [...new Set(item.participantIds.map(Number).filter(Number.isFinite))] : [],
+      responsibleId: Number.isFinite(Number(item.responsibleId)) ? Number(item.responsibleId) : null,
+      externalAttendees: Array.isArray(rawAttendees) ? rawAttendees.map(attendee => typeof attendee === 'string' ? attendee : isRecord(attendee) ? attendee.name : '').filter(Boolean).join(', ').slice(0, 500) : String(rawAttendees ?? '').trim().slice(0, 500),
+      recurrence, weekday: Number.isInteger(Number(item.weekday)) ? Number(item.weekday) : new Date(`${date}T00:00:00`).getDay(),
+      color: types.get(String(item.typeId ?? '')) || (validColor(item.color) ? String(item.color) : '#2563eb'),
+    };
+  }).filter(item => item !== null);
+}
+
+function normalizeMeetingTypes(value: unknown): Array<{ id: string; name: string; color: string }> {
+  const defaults = [
+    { id: 'meeting', name: 'Meeting', color: '#2563eb' },
+    { id: 'briefing', name: 'Briefing', color: '#0f766e' },
+    { id: 'orientation', name: 'Orientation', color: '#7c3aed' },
+    { id: 'other', name: 'Other', color: '#64748b' },
+  ];
+  if (!Array.isArray(value)) return defaults;
+  const seen = new Set<string>();
+  const result = value.map((entry, index) => {
+    const item = isRecord(entry) ? entry : {};
+    const id = String(item.id ?? `meeting-type-${index + 1}`).trim().slice(0, 64);
+    const name = String(item.name ?? '').trim().slice(0, 48);
+    const color = validColor(item.color) ? String(item.color) : '#64748b';
+    if (!id || !name || seen.has(id)) return null;
+    seen.add(id);
+    return { id, name, color };
+  }).filter((item): item is { id: string; name: string; color: string } => item !== null);
+  return result.length ? result : defaults;
+}
+
 export function normalizeLegacyPlannerDocument(input: unknown): PlannerDocument {
   if (!isRecord(input)) throw new Error('Planner JSON must be an object.');
   const employees = Array.isArray(input.employees) ? input.employees.map(normalizeEmployee) : [];
   const activities = Array.isArray(input.activities) ? input.activities.map(normalizeActivity) : [];
   const statuses = Array.isArray(input.statuses) ? input.statuses.map(normalizeStatus) : [];
+  const meetingTypes = normalizeMeetingTypes(input.meetingTypes);
+  const meetings = normalizeMeetings(input.meetings, meetingTypes);
   const now = new Date().toISOString();
   return {
     ...input,
@@ -120,6 +202,8 @@ export function normalizeLegacyPlannerDocument(input: unknown): PlannerDocument 
     categories: Array.isArray(input.categories) ? input.categories.filter(isRecord) : [],
     statuses,
     activities,
+    meetings,
+    meetingTypes,
     entriesMap: isRecord(input.entriesMap) ? input.entriesMap as Record<string, DailyEntry | string | null> : {},
   };
 }
